@@ -34,6 +34,10 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+struct syscall_frame * volatile current_syscall_frame;
+struct _TEB * volatile current_teb;
+
 #ifdef HAVE_SYS_PARAM_H
 # include <sys/param.h>
 #endif
@@ -802,6 +806,10 @@ static void setup_raise_exception( struct thread_data *data, ucontext_t *sigcont
     SP_sig(sigcontext) = (ULONG_PTR)stack;
     PC_sig(sigcontext) = (ULONG_PTR)pKiUserExceptionDispatcher;
     REGn_sig(18, sigcontext) = (ULONG_PTR)data->teb;
+    __asm__ volatile( "msr tpidr_el0, %0" :: "r"(data->teb) );
+    if (current_teb_ptr) *current_teb_ptr = data->teb;
+    current_teb = data->teb;
+    current_syscall_frame = get_syscall_frame( data );
 }
 
 
@@ -1141,6 +1149,7 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
     EXCEPTION_RECORD rec = { .ExceptionAddress = (void *)PC_sig(sigcontext) };
     DWORD64 esr = get_fault_esr( sigcontext );
 
+
     switch (ESR_ELx_EC(esr))
     {
     case ESR_ELx_EC_IABT_LOW:
@@ -1185,6 +1194,7 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
  */
 static void ill_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 {
+
     ucontext_t *sigcontext = _sigcontext;
     struct thread_data *data = get_thread_data();
     CONTEXT context;
@@ -1217,6 +1227,7 @@ static void ill_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
  */
 static void trap_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 {
+
     ucontext_t *sigcontext = _sigcontext;
     struct thread_data *data = get_thread_data();
     CONTEXT context;
@@ -1284,6 +1295,7 @@ static void trap_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
  */
 static void fpe_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 {
+
     ucontext_t *sigcontext = _sigcontext;
     struct thread_data *data = get_thread_data();
     CONTEXT context;
@@ -1345,6 +1357,7 @@ static void fpe_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
  */
 static void int_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 {
+
     HANDLE handle;
 
     if (!p__wine_ctrl_routine) return;
@@ -1361,6 +1374,7 @@ static void int_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
  */
 static void abrt_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 {
+
     ucontext_t *sigcontext = _sigcontext;
     struct thread_data *data = get_thread_data();
     CONTEXT context;
@@ -1380,6 +1394,7 @@ static void abrt_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
  */
 static void quit_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 {
+
     ucontext_t *sigcontext = _sigcontext;
     struct thread_data *data = get_thread_data();
 
@@ -1420,6 +1435,7 @@ static void save_syscall_entry_frame( ucontext_t *sigcontext )
  */
 static void usr1_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 {
+
     ucontext_t *sigcontext = _sigcontext;
     struct thread_data *data = get_thread_data();
     CHPE_V2_CPU_AREA_INFO *chpe;
@@ -1495,6 +1511,7 @@ static void usr1_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
  */
 static void usr2_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 {
+
     ucontext_t *sigcontext = _sigcontext;
     struct thread_data *data = get_thread_data();
     struct syscall_frame *frame = get_syscall_frame( data );
@@ -1676,6 +1693,10 @@ void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, TEB *teb )
     frame->pc    = (ULONG64)pLdrInitializeThunk;
     frame->x[0]  = (ULONG64)ctx;
     frame->x[18] = (ULONG64)teb;
+    __asm__ volatile( "msr tpidr_el0, %0" :: "r"(teb) );  /* keep TEB in EL0 thread ID register too */
+    if (current_teb_ptr) *current_teb_ptr = teb;
+    current_teb = teb;
+    current_syscall_frame = frame;
     syscall_frame_fixup_for_fastpath( frame );
 
     pthread_sigmask( SIG_UNBLOCK, &server_block_set, NULL );
@@ -1726,38 +1747,112 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
  */
 __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    "hint 34\n\t" /* bti c */
-                   "ldr x10, [x18, #0x378]\n\t" /* thread_data->syscall_frame */
+                   "sub sp, sp, #0x2f0\n\t"     /* scratch area on the user stack */
+                   "stp x0, x1, [sp]\n\t"
+                   "stp x2, x3, [sp, #0x10]\n\t"
+                   "stp x4, x5, [sp, #0x20]\n\t"
+                   "stp x6, x7, [sp, #0x30]\n\t"
+                   "stp x8, x9, [sp, #0x40]\n\t"
+                   "stp x10, x11, [sp, #0x50]\n\t"
+                   "stp x12, x13, [sp, #0x60]\n\t"
+                   "stp x14, x15, [sp, #0x70]\n\t"
+                   "stp x16, x17, [sp, #0x80]\n\t"
+                   "str x30, [sp, #0x90]\n\t"
+                   "mrs x17, NZCV\n\t"
+                   "str x17, [sp, #0x98]\n\t"
+                   "mrs x17, FPCR\n\t"
+                   "str w17, [sp, #0xa0]\n\t"
+                   "mrs x17, FPSR\n\t"
+                   "str w17, [sp, #0xa4]\n\t"
+                   "stp q0,  q1,  [sp, #0xb0]\n\t"
+                   "stp q2,  q3,  [sp, #0xd0]\n\t"
+                   "stp q4,  q5,  [sp, #0xf0]\n\t"
+                   "stp q6,  q7,  [sp, #0x110]\n\t"
+                   "stp q8,  q9,  [sp, #0x130]\n\t"
+                   "stp q10, q11, [sp, #0x150]\n\t"
+                   "stp q12, q13, [sp, #0x170]\n\t"
+                   "stp q14, q15, [sp, #0x190]\n\t"
+                   "stp q16, q17, [sp, #0x1b0]\n\t"
+                   "stp q18, q19, [sp, #0x1d0]\n\t"
+                   "stp q20, q21, [sp, #0x1f0]\n\t"
+                   "stp q22, q23, [sp, #0x210]\n\t"
+                   "stp q24, q25, [sp, #0x230]\n\t"
+                   "stp q26, q27, [sp, #0x250]\n\t"
+                   "stp q28, q29, [sp, #0x270]\n\t"
+                   "stp q30, q31, [sp, #0x290]\n\t"
+                   "bl " __ASM_NAME("__wine_get_syscall_frame_c") "\n\t" /* x0 = frame (via pthread thread data) */
+                   "mov x10, x0\n\t"
+                   /* x18-x29 are callee-saved, still intact */
                    "stp x18, x19, [x10, #0x90]\n\t"
                    "stp x20, x21, [x10, #0xa0]\n\t"
                    "stp x22, x23, [x10, #0xb0]\n\t"
                    "stp x24, x25, [x10, #0xc0]\n\t"
                    "stp x26, x27, [x10, #0xd0]\n\t"
                    "stp x28, x29, [x10, #0xe0]\n\t"
-                   "mov x11, sp\n\t"
-                   "stp x9, x11, [x10, #0xf0]\n\t"
-                   "mrs x12, NZCV\n\t"
-                   "stp x30, x12, [x10, #0x100]\n\t"
-                   "str w8, [x10, #0x120]\n\t"
-                   "mrs x12, FPCR\n\t"
+                   "ldp x0, x1, [sp]\n\t"
+                   "stp x0, x1, [x10, #0x00]\n\t"
+                   "ldp x2, x3, [sp, #0x10]\n\t"
+                   "stp x2, x3, [x10, #0x10]\n\t"
+                   "ldp x4, x5, [sp, #0x20]\n\t"
+                   "stp x4, x5, [x10, #0x20]\n\t"
+                   "ldp x6, x7, [sp, #0x30]\n\t"
+                   "stp x6, x7, [x10, #0x30]\n\t"
+                   "ldp x8, x9, [sp, #0x40]\n\t"
+                   "stp x8, x9, [x10, #0x40]\n\t" /* x[8]=syscall num, x[9]=return addr */
+                   "ldp x12, x13, [sp, #0x60]\n\t"
+                   "stp x12, x13, [x10, #0x60]\n\t"
+                   "ldp x14, x15, [sp, #0x70]\n\t"
+                   "stp x14, x15, [x10, #0x70]\n\t"
+                   "add x11, sp, #0x2f0\n\t"    /* user sp, which the argument copy below reads */
+                   "stp x9, x11, [x10, #0xf0]\n\t" /* frame->lr = return addr, frame->sp = user sp */
+                   "ldr x30, [sp, #0x90]\n\t"
+                   "ldr x12, [sp, #0x98]\n\t"  /* NZCV */
+                   "stp x30, x12, [x10, #0x100]\n\t" /* lr, NZCV */
+                   "str w8, [x10, #0x120]\n\t" /* syscall_id */
+                   "ldr w12, [sp, #0xa0]\n\t"  /* FPCR */
                    "str w12, [x10, #0x128]\n\t"
-                   "mrs x12, FPSR\n\t"
+                   "ldr w12, [sp, #0xa4]\n\t"  /* FPSR */
                    "str w12, [x10, #0x12c]\n\t"
+                   "ldp q0,  q1,  [sp, #0xb0]\n\t"
                    "stp q0,  q1,  [x10, #0x130]\n\t"
+                   "ldp q2,  q3,  [sp, #0xd0]\n\t"
                    "stp q2,  q3,  [x10, #0x150]\n\t"
+                   "ldp q4,  q5,  [sp, #0xf0]\n\t"
                    "stp q4,  q5,  [x10, #0x170]\n\t"
+                   "ldp q6,  q7,  [sp, #0x110]\n\t"
                    "stp q6,  q7,  [x10, #0x190]\n\t"
+                   "ldp q8,  q9,  [sp, #0x130]\n\t"
                    "stp q8,  q9,  [x10, #0x1b0]\n\t"
+                   "ldp q10, q11, [sp, #0x150]\n\t"
                    "stp q10, q11, [x10, #0x1d0]\n\t"
+                   "ldp q12, q13, [sp, #0x170]\n\t"
                    "stp q12, q13, [x10, #0x1f0]\n\t"
+                   "ldp q14, q15, [sp, #0x190]\n\t"
                    "stp q14, q15, [x10, #0x210]\n\t"
+                   "ldp q16, q17, [sp, #0x1b0]\n\t"
                    "stp q16, q17, [x10, #0x230]\n\t"
+                   "ldp q18, q19, [sp, #0x1d0]\n\t"
                    "stp q18, q19, [x10, #0x250]\n\t"
+                   "ldp q20, q21, [sp, #0x1f0]\n\t"
                    "stp q20, q21, [x10, #0x270]\n\t"
+                   "ldp q22, q23, [sp, #0x210]\n\t"
                    "stp q22, q23, [x10, #0x290]\n\t"
+                   "ldp q24, q25, [sp, #0x230]\n\t"
                    "stp q24, q25, [x10, #0x2b0]\n\t"
+                   "ldp q26, q27, [sp, #0x250]\n\t"
                    "stp q26, q27, [x10, #0x2d0]\n\t"
+                   "ldp q28, q29, [sp, #0x270]\n\t"
                    "stp q28, q29, [x10, #0x2f0]\n\t"
+                   "ldp q30, q31, [sp, #0x290]\n\t"
                    "stp q30, q31, [x10, #0x310]\n\t"
+                   /* restore the syscall args and number into registers */
+                   "ldp x0, x1, [sp]\n\t"
+                   "ldp x2, x3, [sp, #0x10]\n\t"
+                   "ldp x4, x5, [sp, #0x20]\n\t"
+                   "ldp x6, x7, [sp, #0x30]\n\t"
+                   "ldp x8, x9, [sp, #0x40]\n\t"
+                   "ldp x16, x17, [sp, #0x80]\n\t"
+                   "add sp, sp, #0x2f0\n\t"    /* back to the user stack */
                    /* switch to kernel stack */
                    "mov sp, x10\n\t"
                    /* we're now on the kernel stack, stitch unwind info with previous frame */
@@ -1779,7 +1874,14 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    __ASM_CFI_CFA_IS_AT2(x22, 0x98, 0x02) /* frame->syscall_cfa */
                    "and x20, x8, #0xfff\n\t"    /* syscall number */
                    "ubfx x21, x8, #12, #2\n\t"  /* syscall table number */
-                   "ldr x16, [x18, #0x370]\n\t" /* thread_data->syscall_table */
+                   "mrs x18, tpidr_el0\n\t"
+                   "mov x17, #0x100000000\n\t"
+                   "cmp x18, x17\n\t"
+                   "b.hi 1f\n\t"
+                   "adrp x18, " __ASM_NAME("current_teb") "@GOTPAGE\n\t"
+                   "ldr x18, [x18, " __ASM_NAME("current_teb") "@GOTPAGEOFF]\n\t"
+                   "ldr x18, [x18]\n\t"
+                   "1:\tldr x16, [x18, #0x370]\n\t" /* thread_data->syscall_table */
                    "add x21, x16, x21, lsl #5\n\t"
                    "ldr x16, [x21, #16]\n\t"    /* table->ServiceLimit */
                    "cmp x20, x16\n\t"
@@ -1854,7 +1956,8 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    /* switch to user stack */
                    "mov sp, x17\n\t"
                    __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_user_stack") ":\n\t"
-                   "ret x16\n"
+                   "msr tpidr_el0, x18\n\t"
+                   "br x16\n"
 
                    __ASM_LOCAL_LABEL("trace_syscall") ":\n\t"
                    "stp x0, x1, [sp, #-0x40]!\n\t"
@@ -1887,6 +1990,9 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    "b " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") )
 
 __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher_return,
+                   "adrp x18, " __ASM_NAME("current_teb") "@GOTPAGE\n\t"
+                   "ldr x18, [x18, " __ASM_NAME("current_teb") "@GOTPAGEOFF]\n\t"
+                   "ldr x18, [x18]\n\t" /* TEB (frame->x18 may be clobbered by nested syscalls) */
                    "ldr w11, [x18, #0x380]\n\t" /* thread_data->syscall_trace */
                    "cbnz x11, " __ASM_LOCAL_LABEL("trace_syscall_ret") "\n\t"
                    "b " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") )
@@ -1897,21 +2003,43 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher_return,
  */
 __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                    "hint 34\n\t" /* bti c */
-                   "ldr x10, [x18, #0x378]\n\t" /* thread_data->syscall_frame */
+                   "sub sp, sp, #0x160\n\t"    /* scratch area on the user stack */
+                   "stp x0, x1, [sp]\n\t"
+                   "str x2, [sp, #0x10]\n\t"
+                   "str x30, [sp, #0x18]\n\t"
+                   "mrs x17, NZCV\n\t"
+                   "str x17, [sp, #0x20]\n\t"
+                   "stp q8,  q9,  [sp, #0x30]\n\t"
+                   "stp q10, q11, [sp, #0x50]\n\t"
+                   "stp q12, q13, [sp, #0x70]\n\t"
+                   "stp q14, q15, [sp, #0x90]\n\t"
+                   "bl " __ASM_NAME("__wine_get_syscall_frame_c") "\n\t" /* x0 = frame (via pthread thread data) */
+                   "mov x10, x0\n\t"
+                   /* x18-x29 are callee-saved, still intact */
                    "stp x18, x19, [x10, #0x90]\n\t"
                    "stp x20, x21, [x10, #0xa0]\n\t"
                    "stp x22, x23, [x10, #0xb0]\n\t"
                    "stp x24, x25, [x10, #0xc0]\n\t"
                    "stp x26, x27, [x10, #0xd0]\n\t"
                    "stp x28, x29, [x10, #0xe0]\n\t"
+                   "add x9, sp, #0x160\n\t"   /* user sp */
+                   "ldr x17, [sp, #0x18]\n\t" /* lr (PE return address) */
+                   "stp x17, x9, [x10, #0xf0]\n\t" /* lr, sp */
+                   "str x17, [x10, #0x100]\n\t"   /* pc */
+                   "ldr x17, [sp, #0x20]\n\t" /* NZCV */
+                   "str x17, [x10, #0x108]\n\t"   /* cpsr */
+                   "ldp q8,  q9,  [sp, #0x30]\n\t"
                    "stp q8,  q9,  [x10, #0x1b0]\n\t"
+                   "ldp q10, q11, [sp, #0x50]\n\t"
                    "stp q10, q11, [x10, #0x1d0]\n\t"
+                   "ldp q12, q13, [sp, #0x70]\n\t"
                    "stp q12, q13, [x10, #0x1f0]\n\t"
+                   "ldp q14, q15, [sp, #0x90]\n\t"
                    "stp q14, q15, [x10, #0x210]\n\t"
-                   "mov x9, sp\n\t"
-                   "stp x30, x9, [x10, #0xf0]\n\t"
-                   "mrs x9, NZCV\n\t"
-                   "stp x30, x9, [x10, #0x100]\n\t"
+                   /* restore the unix call args */
+                   "ldp x0, x1, [sp]\n\t"
+                   "ldr x2, [sp, #0x10]\n\t"
+                   "add sp, sp, #0x160\n\t"
                    /* switch to kernel stack */
                    "mov sp, x10\n\t"
                    /* we're now on the kernel stack, stitch unwind info with previous frame */
@@ -1942,7 +2070,8 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                    /* switch to user stack */
                    "mov sp, x16\n\t"
                    __ASM_LOCAL_LABEL("__wine_unix_call_dispatcher_user_stack") ":\n\t"
-                   "ret x17" )
+                   "msr tpidr_el0, x18\n\t"
+                   "br x17" )
 
 __ASM_GLOBAL_POINTER( __ASM_NAME("__wine_syscall_dispatcher_kernel_stack_ptr"),
                       __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_kernel_stack") )
@@ -1956,5 +2085,22 @@ __ASM_GLOBAL_POINTER( __ASM_NAME("__wine_unix_call_dispatcher_user_stack"),
 
 __ASM_GLOBAL_POINTER( __ASM_NAME("call_user_mode_callback_user_stack_ptr"),
                       __ASM_LOCAL_LABEL("call_user_mode_callback_user_stack") )
+
+
+/***********************************************************************
+ *           __wine_get_syscall_frame_c
+ *
+ * Helper for the syscall dispatchers: find the current thread's syscall
+ * frame through the pthread thread data (the TEB register is unreliable
+ * on Apple Silicon, and a global would race across threads).
+ */
+struct syscall_frame * __wine_get_syscall_frame_c(void)
+{
+    struct thread_data *data = get_thread_data();
+    current_teb = data->teb;
+    current_syscall_frame = get_syscall_frame( data );
+    if (current_teb_ptr) *current_teb_ptr = data->teb;
+    return current_syscall_frame;
+}
 
 #endif  /* __aarch64__ */

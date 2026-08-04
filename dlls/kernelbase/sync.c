@@ -39,7 +39,15 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(sync);
 
-static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
+extern void * __cdecl __wine_get_user_shared_data(void);
+
+static const struct _KUSER_SHARED_DATA *get_user_shared_data(void)
+{
+    static const struct _KUSER_SHARED_DATA *user_shared_data;
+
+    if (!user_shared_data) user_shared_data = __wine_get_user_shared_data();
+    return user_shared_data;
+}
 
 /* check if current version is NT or Win95 */
 static inline BOOL is_version_nt(void)
@@ -181,7 +189,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetSystemTimes( FILETIME *idle, FILETIME *kernel, 
 ULONG WINAPI DECLSPEC_HOTPATCH GetTickCount(void)
 {
     /* note: we ignore TickCountMultiplier */
-    return user_shared_data->TickCount.LowPart;
+    return get_user_shared_data()->TickCount.LowPart;
 }
 
 
@@ -194,10 +202,10 @@ ULONGLONG WINAPI DECLSPEC_HOTPATCH GetTickCount64(void)
 
     do
     {
-        high = user_shared_data->TickCount.High1Time;
-        low = user_shared_data->TickCount.LowPart;
+        high = get_user_shared_data()->TickCount.High1Time;
+        low = get_user_shared_data()->TickCount.LowPart;
     }
-    while (high != user_shared_data->TickCount.High2Time);
+    while (high != get_user_shared_data()->TickCount.High2Time);
     /* note: we ignore TickCountMultiplier */
     return (ULONGLONG)high << 32 | low;
 }
@@ -212,10 +220,10 @@ void WINAPI DECLSPEC_HOTPATCH QueryInterruptTime( ULONGLONG *time )
 
     do
     {
-        high = user_shared_data->InterruptTime.High1Time;
-        low = user_shared_data->InterruptTime.LowPart;
+        high = get_user_shared_data()->InterruptTime.High1Time;
+        low = get_user_shared_data()->InterruptTime.LowPart;
     }
-    while (high != user_shared_data->InterruptTime.High2Time);
+    while (high != get_user_shared_data()->InterruptTime.High2Time);
     *time = (ULONGLONG)high << 32 | low;
 }
 

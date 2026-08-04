@@ -5106,7 +5106,7 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
 #endif
         KeQueryTickCount( &count );  /* initialize the global KeTickCount */
         NtBuildNumber = NtCurrentTeb()->Peb->OSBuildNumber;
-        ntoskrnl_heap = HeapCreate( HEAP_CREATE_ENABLE_EXECUTE, 0, 0 );
+        ntoskrnl_heap = HeapCreate( 0, 0, 0 );
         dpc_call_tls_index = TlsAlloc();
         LdrRegisterDllNotification( 0, ldr_notify_callback, NULL, &ldr_notify_cookie );
         break;

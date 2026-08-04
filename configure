@@ -4756,6 +4756,11 @@ case $host_os in *\ *) host_os=`printf '%s\n' "$host_os" | sed 's/ /-/g'`;; esac
 
 
 
+case $host_cpu-$host_os in
+  aarch64-*darwin*) wine_use_dynamic_user_shared_data=yes ;;
+  *)                wine_use_dynamic_user_shared_data=no ;;
+esac
+
 if test "x$enable_sast" = xyes
 then :
   CC=${CC:-clang}
@@ -10513,6 +10518,11 @@ then :
   as_fn_append ${wine_arch}_EXTRACFLAGS " -fasync-exceptions"
 fi }
 
+                if test "$wine_arch" = "aarch64" -a "$wine_use_dynamic_user_shared_data" = "yes"
+    then
+        as_fn_append ${wine_arch}_EXTRACFLAGS " -DHAVE_DYNAMIC_USER_SHARED_DATA"
+    fi
+
 done
 
 CC=$saved_CC
@@ -12443,6 +12453,12 @@ else case e in #(
   e) wine_use_preloader=yes ;;
 esac
 fi
+        ;;
+      aarch64)
+                                                                                        WINELOADER_LDFLAGS="-mmacosx-version-min=12 -Wl,-segalign,0x1000,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist"
+        CFLAGS="$CFLAGS -mmacosx-version-min=12"
+        LDFLAGS="$LDFLAGS -mmacosx-version-min=12"
+        wine_use_preloader=no
         ;;
       *)    wine_use_preloader=no ;;
     esac
@@ -20302,6 +20318,7 @@ else case e in #(
   e) case $HOST_ARCH in
             i386) wine_cv_64bit_compare_swap="-march=i586" ;;
             arm)  wine_cv_64bit_compare_swap="-march=armv7-a" ;;
+            aarch64) wine_cv_64bit_compare_swap="none needed" ;;
             *)    wine_cv_64bit_compare_swap="unknown" ;;
            esac
            if test "x$wine_cv_64bit_compare_swap" != xunknown
@@ -21825,6 +21842,14 @@ if test "x$ac_cv_cpp_def___arm__" = xyes
 then :
   EXTRACFLAGS="$EXTRACFLAGS -D__arm__"
 fi ;;
+esac
+
+case $host_cpu-$host_os in
+  aarch64-*darwin*)
+
+printf '%s\n' "#define HAVE_DYNAMIC_USER_SHARED_DATA 1" >>confdefs.h
+
+    ;;
 esac
 
 
