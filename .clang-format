@@ -1,0 +1,8 @@
+# Copyright 2026 recelilious and the Paneport contributors
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+# Wine has no formatter of its own: every file keeps the style it was written in. This file
+# keeps clang-format from applying the style of a repository that holds this one as a
+# submodule, such as Paneport, whose .clang-format would otherwise be the nearest one.
+DisableFormat: true
+SortIncludes: Never
