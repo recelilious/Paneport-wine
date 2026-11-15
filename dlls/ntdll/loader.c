@@ -3,6 +3,7 @@
  *
  * Copyright 1995, 2003 Alexandre Julliard
  * Copyright 2002 Dmitry Timoshkov for CodeWeavers
+ * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public

@@ -2,6 +2,7 @@
  * ARM64 signal handling routines
  *
  * Copyright 2010-2013 André Hentschel
+ * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public

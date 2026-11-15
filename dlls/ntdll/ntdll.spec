@@ -2,6 +2,7 @@
 #Nt... functions.  (see www.sysinternals.com for details)
 #if you change a Nt.. function DON'T FORGET to change the
 #Zw one too.
+#Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20.
 
 @ stdcall A_SHAFinal(ptr ptr)
 @ stdcall A_SHAInit(ptr)

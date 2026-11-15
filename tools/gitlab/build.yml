@@ -1,4 +1,5 @@
 # CI script for building Wine
+# Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20.
 
 .wine-build:
   stage: build
