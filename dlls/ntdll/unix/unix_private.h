@@ -2,7 +2,7 @@
  * Ntdll Unix private interface
  *
  * Copyright (C) 2020 Alexandre Julliard
- * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20.
+ * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and adds __wine_jit_write_protect.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -410,6 +410,7 @@ extern NTSTATUS unixcall_wine_spawnvp( void *args );
 extern NTSTATUS unixcall_get_shared_user_data( void *args );
 extern NTSTATUS unixcall_register_teb_ptr( void *args );
 extern NTSTATUS unixcall_get_current_teb( void *args );
+extern NTSTATUS unixcall_jit_write_protect( void *args );
 extern struct _TEB * volatile *current_teb_ptr;
 #ifdef _WIN64
 extern NTSTATUS wow64_wine_dbg_write( void *args );

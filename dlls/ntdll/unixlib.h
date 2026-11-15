@@ -2,7 +2,7 @@
  * Ntdll Unix interface
  *
  * Copyright (C) 2020 Alexandre Julliard
- * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20.
+ * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and adds __wine_jit_write_protect.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -82,6 +82,11 @@ struct get_current_teb_params
     struct _TEB **teb;
 };
 
+struct jit_write_protect_params
+{
+    BOOL enable;
+};
+
 enum ntdll_unix_funcs
 {
     unix_load_so_dll,
@@ -95,6 +100,7 @@ enum ntdll_unix_funcs
     unix_get_shared_user_data,
     unix_register_teb_ptr,
     unix_get_current_teb,
+    unix_jit_write_protect,
 };
 
 extern unixlib_handle_t __wine_unixlib_handle;

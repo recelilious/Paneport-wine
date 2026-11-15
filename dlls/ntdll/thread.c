@@ -2,7 +2,7 @@
  * NT threads support
  *
  * Copyright 1996, 2003 Alexandre Julliard
- * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20.
+ * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and adds __wine_jit_write_protect.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -55,6 +55,23 @@ void * __cdecl __wine_get_user_shared_data(void)
 {
     return user_shared_data;
 }
+
+#if defined(__aarch64__) || defined(__arm64ec__)
+/***********************************************************************
+ *           __wine_jit_write_protect  (NTDLL.@)
+ *
+ * Make the memory that NtAllocateVirtualMemoryEx gave out for ARM64EC code
+ * executable (enable) or writable (!enable) for the current thread, on hosts
+ * that never let it be both. Elsewhere it returns STATUS_NOT_SUPPORTED, and
+ * the memory stays writable and executable.
+ */
+NTSTATUS __cdecl __wine_jit_write_protect( BOOL enable )
+{
+    struct jit_write_protect_params params = { enable };
+
+    return WINE_UNIX_CALL( unix_jit_write_protect, &params );
+}
+#endif
 
 struct debug_info
 {

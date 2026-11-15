@@ -2,7 +2,7 @@
  * Unix interface for loader functions
  *
  * Copyright (C) 2020 Alexandre Julliard
- * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20.
+ * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and adds __wine_jit_write_protect.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -1036,6 +1036,7 @@ static const unixlib_entry_t unix_call_funcs[] =
     unixcall_get_shared_user_data,
     unixcall_register_teb_ptr,
     unixcall_get_current_teb,
+    unixcall_jit_write_protect,
 };
 
 

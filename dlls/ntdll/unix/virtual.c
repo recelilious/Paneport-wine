@@ -2,7 +2,7 @@
  * Win32 virtual memory functions
  *
  * Copyright 1997, 2002, 2020 Alexandre Julliard
- * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20.
+ * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and maps ARM64EC code with MAP_JIT on Apple silicon.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -135,6 +135,7 @@ struct file_view
 #define VPROT_SYSTEM           0x0200  /* system view (underlying mmap not under our control) */
 #define VPROT_PLACEHOLDER      0x0400
 #define VPROT_FREE_PLACEHOLDER 0x0800
+#define VPROT_JIT              0x1000  /* view mapped with MAP_JIT (Apple silicon) */
 
 /* Conversion from VPROT_* to Win32 flags */
 static const BYTE VIRTUAL_Win32Flags[16] =
@@ -1971,6 +1972,56 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
     if (status != STATUS_SUCCESS) unmap_area( ptr, size );
     return status;
 }
+
+
+#if defined(__APPLE__) && defined(__aarch64__)
+
+/***********************************************************************
+ *           map_jit_view
+ *
+ * Create a view for generated ARM64EC code and mmap it with MAP_JIT.
+ * virtual_mutex must be held by caller.
+ *
+ * Apple silicon lets a page be writable and executable at once only inside
+ * a MAP_JIT mapping, and the kernel chooses where such a mapping goes: it
+ * cannot be mapped at a fixed address or into an area we have reserved.
+ * Each thread then sees its pages either as writable or as executable, as
+ * __wine_jit_write_protect last set it for that thread.
+ */
+static NTSTATUS map_jit_view( struct file_view **view_ret, size_t size, unsigned int vprot,
+                              size_t align_mask )
+{
+    size_t host_size = ROUND_SIZE( 0, size, host_page_mask );
+    size_t view_size = host_size + align_mask + 1;
+    NTSTATUS status;
+    void *ptr;
+
+    ptr = mmap( NULL, view_size, PROT_READ | PROT_WRITE | PROT_EXEC,
+                MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0 );
+    if (ptr == MAP_FAILED)
+    {
+        ERR( "MAP_JIT mmap error %s, size %p\n", strerror(errno), (void *)view_size );
+        return STATUS_NO_MEMORY;
+    }
+    ptr = unmap_extra_space( ptr, view_size, host_size, align_mask );
+    if (is_beyond_limit( ptr, size, user_space_limit ) ||
+        is_beyond_limit( ptr, size, host_addr_space_limit ))
+    {
+        munmap( ptr, host_size );
+        return STATUS_NO_MEMORY;
+    }
+    if ((status = create_view( view_ret, ptr, size, vprot )))
+    {
+        munmap( ptr, host_size );
+        return status;
+    }
+    (*view_ret)->protect |= VPROT_JIT;
+    mprotect_range( ptr, size, 0, 0 );
+    TRACE( "got MAP_JIT mem %p-%p\n", ptr, (char *)ptr + size );
+    return STATUS_SUCCESS;
+}
+
+#endif
 
 
 /***********************************************************************
@@ -4198,6 +4249,24 @@ NTSTATUS unixcall_get_shared_user_data( void *args )
 }
 
 /***********************************************************************
+ *           unixcall_jit_write_protect
+ *
+ * Make the MAP_JIT views executable (enable) or writable (!enable) for the
+ * current thread. Emulators call it around every write to their code.
+ */
+NTSTATUS unixcall_jit_write_protect( void *args )
+{
+#if defined(__APPLE__) && defined(__aarch64__)
+    const struct jit_write_protect_params *params = args;
+
+    pthread_jit_write_protect_np( params->enable );
+    return STATUS_SUCCESS;
+#else
+    return STATUS_NOT_SUPPORTED;
+#endif
+}
+
+/***********************************************************************
  *           virtual_map_user_shared_data
  */
 void virtual_map_user_shared_data(void)
@@ -4865,6 +4934,13 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
 
             if (vprot & VPROT_WRITECOPY) status = STATUS_INVALID_PAGE_PROTECTION;
             else if (is_dos_memory) status = allocate_dos_memory( &view, vprot );
+#if defined(__APPLE__) && defined(__aarch64__)
+            /* the kernel places a MAP_JIT mapping itself, so it can only serve
+             * a request that leaves the address to us */
+            else if ((attributes & MEM_EXTENDED_PARAMETER_EC_CODE) && !base && !limit_low &&
+                     !limit_high && !(type & (MEM_WRITE_WATCH | MEM_RESERVE_PLACEHOLDER)))
+                status = map_jit_view( &view, size, vprot, align ? align - 1 : granularity_mask );
+#endif
             else status = map_view( &view, base, size, type, vprot, limit_low, limit_high,
                                     align ? align - 1 : granularity_mask );
 
