@@ -3,7 +3,7 @@
  *
  * Copyright 1995, 2003 Alexandre Julliard
  * Copyright 2002 Dmitry Timoshkov for CodeWeavers
- * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20.
+ * Changed for Paneport on 2026-11-15 and 2026-11-16: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, without its use of TPIDR_EL0.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -4454,10 +4454,6 @@ void loader_init( CONTEXT *context, void **entry )
     NTSTATUS status;
     ULONG_PTR cookie, port = 0;
     WINE_MODREF *wm;
-
-#if defined(__aarch64__) && !defined(__arm64ec__)
-    __asm__ volatile( "msr tpidr_el0, %0" :: "r"(context->X18) );
-#endif
 
     if (process_detaching) NtTerminateThread( GetCurrentThread(), 0 );
 

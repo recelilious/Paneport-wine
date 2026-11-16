@@ -2,7 +2,7 @@
  * ARM64 signal handling routines
  *
  * Copyright 2010-2013 André Hentschel
- * Changed for Paneport on 2026-11-15 and 2026-11-16: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and takes the TEB from x18 in the syscall dispatcher and its return again.
+ * Changed for Paneport on 2026-11-15 and 2026-11-16: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and takes the TEB from x18 again instead of TPIDR_EL0.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -807,7 +807,6 @@ static void setup_raise_exception( struct thread_data *data, ucontext_t *sigcont
     SP_sig(sigcontext) = (ULONG_PTR)stack;
     PC_sig(sigcontext) = (ULONG_PTR)pKiUserExceptionDispatcher;
     REGn_sig(18, sigcontext) = (ULONG_PTR)data->teb;
-    __asm__ volatile( "msr tpidr_el0, %0" :: "r"(data->teb) );
     if (current_teb_ptr) *current_teb_ptr = data->teb;
     current_teb = data->teb;
     current_syscall_frame = get_syscall_frame( data );
@@ -1694,7 +1693,6 @@ void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, TEB *teb )
     frame->pc    = (ULONG64)pLdrInitializeThunk;
     frame->x[0]  = (ULONG64)ctx;
     frame->x[18] = (ULONG64)teb;
-    __asm__ volatile( "msr tpidr_el0, %0" :: "r"(teb) );  /* keep TEB in EL0 thread ID register too */
     if (current_teb_ptr) *current_teb_ptr = teb;
     current_teb = teb;
     current_syscall_frame = frame;
@@ -1952,7 +1950,6 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    /* switch to user stack */
                    "mov sp, x17\n\t"
                    __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_user_stack") ":\n\t"
-                   "msr tpidr_el0, x18\n\t"
                    "br x16\n"
 
                    __ASM_LOCAL_LABEL("trace_syscall") ":\n\t"
@@ -2063,7 +2060,6 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                    /* switch to user stack */
                    "mov sp, x16\n\t"
                    __ASM_LOCAL_LABEL("__wine_unix_call_dispatcher_user_stack") ":\n\t"
-                   "msr tpidr_el0, x18\n\t"
                    "br x17" )
 
 __ASM_GLOBAL_POINTER( __ASM_NAME("__wine_syscall_dispatcher_kernel_stack_ptr"),

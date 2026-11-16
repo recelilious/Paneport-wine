@@ -2,7 +2,7 @@
  * ARM64 signal handling routines
  *
  * Copyright 2010-2013 André Hentschel
- * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20.
+ * Changed for Paneport on 2026-11-15 and 2026-11-16: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, without its use of TPIDR_EL0.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -840,8 +840,6 @@ __ASM_GLOBAL_FUNC( RtlUserThreadStart,
  */
 void WINAPI LdrInitializeThunk( CONTEXT *context, ULONG_PTR unk2, ULONG_PTR unk3, ULONG_PTR unk4 )
 {
-    __asm__ volatile( "mov x18, %0" :: "r"(context->X18) );
-    __asm__ volatile( "msr tpidr_el0, %0" :: "r"(context->X18) );
     loader_init( context, (void **)&context->X0 );
     TRACE_(relay)( "\1Starting thread proc %p (arg=%p)\n", (void *)context->X0, (void *)context->X1 );
     NtContinue( context, TRUE );
