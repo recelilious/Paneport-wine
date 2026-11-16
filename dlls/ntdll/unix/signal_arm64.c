@@ -2,7 +2,7 @@
  * ARM64 signal handling routines
  *
  * Copyright 2010-2013 André Hentschel
- * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20.
+ * Changed for Paneport on 2026-11-15 and 2026-11-16: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and takes the TEB from x18 in the syscall dispatcher and its return again.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -1875,14 +1875,9 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    __ASM_CFI_CFA_IS_AT2(x22, 0x98, 0x02) /* frame->syscall_cfa */
                    "and x20, x8, #0xfff\n\t"    /* syscall number */
                    "ubfx x21, x8, #12, #2\n\t"  /* syscall table number */
-                   "mrs x18, tpidr_el0\n\t"
-                   "mov x17, #0x100000000\n\t"
-                   "cmp x18, x17\n\t"
-                   "b.hi 1f\n\t"
-                   "adrp x18, " __ASM_NAME("current_teb") "@GOTPAGE\n\t"
-                   "ldr x18, [x18, " __ASM_NAME("current_teb") "@GOTPAGEOFF]\n\t"
-                   "ldr x18, [x18]\n\t"
-                   "1:\tldr x16, [x18, #0x370]\n\t" /* thread_data->syscall_table */
+                   /* x18 still holds the caller's TEB: macOS keeps x18 for the loader, which is
+                    * linked as built against the macOS 12 SDK, while it overwrites TPIDR_EL0 */
+                   "ldr x16, [x18, #0x370]\n\t" /* thread_data->syscall_table */
                    "add x21, x16, x21, lsl #5\n\t"
                    "ldr x16, [x21, #16]\n\t"    /* table->ServiceLimit */
                    "cmp x20, x16\n\t"
@@ -1991,9 +1986,6 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    "b " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") )
 
 __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher_return,
-                   "adrp x18, " __ASM_NAME("current_teb") "@GOTPAGE\n\t"
-                   "ldr x18, [x18, " __ASM_NAME("current_teb") "@GOTPAGEOFF]\n\t"
-                   "ldr x18, [x18]\n\t" /* TEB (frame->x18 may be clobbered by nested syscalls) */
                    "ldr w11, [x18, #0x380]\n\t" /* thread_data->syscall_trace */
                    "cbnz x11, " __ASM_LOCAL_LABEL("trace_syscall_ret") "\n\t"
                    "b " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") )
