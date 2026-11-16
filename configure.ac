@@ -1,7 +1,7 @@
 dnl Process this file with autoconf to produce a configure script.
 dnl Original author: Michael Patra
 dnl For detailed change history, see the git commit logs.
-dnl Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20.
+dnl Changed for Paneport on 2026-11-15 and 2026-11-16: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and links the macOS loader so that macOS 27 starts it and keeps x18.
 
 m4_define(WINE_VERSION,regexp(m4_include(VERSION),[version \([-.0-9A-Za-z]+\)],[\1]))
 
@@ -1023,11 +1023,13 @@ case $host_os in
         dnl page zero. Build it as a standard PIE executable instead, and let
         dnl ntdll reserve the address space needed by Windows apps at runtime
         dnl (following the OS ASLR policy, no fixed load addresses).
-        dnl Also build with a macOS 12 deployment target so the kernel keeps
-        dnl x18 (the Windows ARM64 TEB register) preserved across syscalls and
-        dnl signals; macOS 13+ would otherwise clobber it for binaries built
-        dnl against a newer SDK.
-        WINELOADER_LDFLAGS="-mmacosx-version-min=12 -Wl,-segalign,0x1000,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist"
+        dnl Also build with a macOS 12 deployment target, and link the loader
+        dnl as built against the macOS 12 SDK: the kernel keeps x18 (the
+        dnl Windows ARM64 TEB register) across context switches only for a
+        dnl main executable whose SDK version is 12 or older. The loader keeps
+        dnl the default 16K segment alignment, since macOS 27 kills an arm64
+        dnl executable whose segments are aligned to 4K at exec time.
+        WINELOADER_LDFLAGS="-Wl,-platform_version,macos,12.0,12.0,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist"
         CFLAGS="$CFLAGS -mmacosx-version-min=12"
         LDFLAGS="$LDFLAGS -mmacosx-version-min=12"
         wine_use_preloader=no
