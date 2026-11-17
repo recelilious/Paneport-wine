@@ -1,4 +1,5 @@
 /* include/config.h.in.  Generated from configure.ac by autoheader.  */
+/* Changed for Paneport on 2026-11-15: carries the hunks of Wine merge request 11638 by trcrsired, rebased onto Wine 11.20; edited by hand, not regenerated. */
 
 #ifndef __WINE_CONFIG_H
 #define __WINE_CONFIG_H

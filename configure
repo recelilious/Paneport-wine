@@ -11,6 +11,7 @@
 #
 # This configure script is free software; the Free Software Foundation
 # gives unlimited permission to copy, distribute and modify it.
+# Changed for Paneport on 2026-11-15 and 2026-11-16: carries the hunks of Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and links the macOS loader so that macOS 27 starts it and keeps x18; edited by hand, not regenerated.
 ## -------------------- ##
 ## M4sh Initialization. ##
 ## -------------------- ##
