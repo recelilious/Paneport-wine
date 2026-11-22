@@ -1,7 +1,7 @@
 dnl Process this file with autoconf to produce a configure script.
 dnl Original author: Michael Patra
 dnl For detailed change history, see the git commit logs.
-dnl Changed for Paneport on 2026-11-15 and 2026-11-16: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and links the macOS loader so that macOS 27 starts it and keeps x18.
+dnl Changed for Paneport on 2026-11-15, 2026-11-16 and 2026-11-22: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, links the macOS loader so that macOS 27 starts it and keeps x18, and uses the dynamic shared user data in ARM64EC code too.
 
 m4_define(WINE_VERSION,regexp(m4_include(VERSION),[version \([-.0-9A-Za-z]+\)],[\1]))
 
@@ -700,9 +700,12 @@ Please install mingw-w64, clang/llvm-dlltool/lld, or llvm-mingw.])
     dnl On Apple Silicon the fixed Windows KUSER_SHARED_DATA address 0x7ffe0000
     dnl cannot be mapped, so the PE code must use ntdll's
     dnl __wine_get_user_shared_data() export instead of a hardcoded pointer.
-    if test "$wine_arch" = "aarch64" -a "$wine_use_dynamic_user_shared_data" = "yes"
+    dnl The ARM64EC half of a hybrid module is built with arm64ec's flags.
+    if test "$wine_use_dynamic_user_shared_data" = "yes"
     then
-        AS_VAR_APPEND([${wine_arch}_EXTRACFLAGS],[" -DHAVE_DYNAMIC_USER_SHARED_DATA"])
+        case $wine_arch in
+          aarch64|arm64ec) AS_VAR_APPEND([${wine_arch}_EXTRACFLAGS],[" -DHAVE_DYNAMIC_USER_SHARED_DATA"]) ;;
+        esac
     fi
 
 done
