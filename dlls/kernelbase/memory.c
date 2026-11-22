@@ -2,6 +2,7 @@
  * Win32 memory management functions
  *
  * Copyright 1997 Alexandre Julliard
+ * Changed for Paneport on 2026-11-22: reads the shared user data through ntdll's __wine_get_user_shared_data export.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -40,7 +41,15 @@ WINE_DEFAULT_DEBUG_CHANNEL(heap);
 WINE_DECLARE_DEBUG_CHANNEL(virtual);
 WINE_DECLARE_DEBUG_CHANNEL(globalmem);
 
-static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
+extern void * __cdecl __wine_get_user_shared_data(void);
+
+static const struct _KUSER_SHARED_DATA *get_user_shared_data(void)
+{
+    static const struct _KUSER_SHARED_DATA *user_shared_data;
+
+    if (!user_shared_data) user_shared_data = __wine_get_user_shared_data();
+    return user_shared_data;
+}
 
 static CRITICAL_SECTION memstatus_section;
 static CRITICAL_SECTION_DEBUG critsect_debug =
@@ -151,7 +160,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH FlushInstructionCache( HANDLE process, LPCVOID add
  */
 SIZE_T WINAPI GetLargePageMinimum(void)
 {
-    return user_shared_data->LargePageMinimum;
+    return get_user_shared_data()->LargePageMinimum;
 }
 
 
