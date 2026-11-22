@@ -2,7 +2,7 @@
  * ARM64 signal handling routines
  *
  * Copyright 2010-2013 André Hentschel
- * Changed for Paneport on 2026-11-15 and 2026-11-16: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and takes the TEB from x18 again instead of TPIDR_EL0.
+ * Changed for Paneport on 2026-11-15, 2026-11-16 and 2026-11-22: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, takes the TEB from x18 again instead of TPIDR_EL0, and finds the syscall frame without the request's global variables.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -35,10 +35,6 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <unistd.h>
-
-struct syscall_frame * volatile current_syscall_frame;
-struct _TEB * volatile current_teb;
-
 #ifdef HAVE_SYS_PARAM_H
 # include <sys/param.h>
 #endif
@@ -807,9 +803,6 @@ static void setup_raise_exception( struct thread_data *data, ucontext_t *sigcont
     SP_sig(sigcontext) = (ULONG_PTR)stack;
     PC_sig(sigcontext) = (ULONG_PTR)pKiUserExceptionDispatcher;
     REGn_sig(18, sigcontext) = (ULONG_PTR)data->teb;
-    if (current_teb_ptr) *current_teb_ptr = data->teb;
-    current_teb = data->teb;
-    current_syscall_frame = get_syscall_frame( data );
 }
 
 
@@ -1693,9 +1686,6 @@ void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, TEB *teb )
     frame->pc    = (ULONG64)pLdrInitializeThunk;
     frame->x[0]  = (ULONG64)ctx;
     frame->x[18] = (ULONG64)teb;
-    if (current_teb_ptr) *current_teb_ptr = teb;
-    current_teb = teb;
-    current_syscall_frame = frame;
     syscall_frame_fixup_for_fastpath( frame );
 
     pthread_sigmask( SIG_UNBLOCK, &server_block_set, NULL );
@@ -2085,11 +2075,7 @@ __ASM_GLOBAL_POINTER( __ASM_NAME("call_user_mode_callback_user_stack_ptr"),
  */
 struct syscall_frame * __wine_get_syscall_frame_c(void)
 {
-    struct thread_data *data = get_thread_data();
-    current_teb = data->teb;
-    current_syscall_frame = get_syscall_frame( data );
-    if (current_teb_ptr) *current_teb_ptr = data->teb;
-    return current_syscall_frame;
+    return get_syscall_frame( get_thread_data() );
 }
 
 #endif  /* __aarch64__ */
