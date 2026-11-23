@@ -3,6 +3,7 @@
  *
  * Copyright 1996, 1998 Alexandre Julliard
  * Copyright 2003       Eric Pouech
+ * Changed for Paneport on 2026-11-23: in single-process mode, takes the standard handles from the launch, starts in the program's folder, and runs the boot step in the process instead of wineboot.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -1341,32 +1342,35 @@ static void add_registry_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size )
  */
 static void get_initial_console( RTL_USER_PROCESS_PARAMETERS *params )
 {
-    int output_fd = -1;
+    int output_fd = -1, fds[3] = { 0, 1, 2 };
 
-    wine_server_fd_to_handle( 0, GENERIC_READ|SYNCHRONIZE,  OBJ_INHERIT, &params->hStdInput );
-    wine_server_fd_to_handle( 1, GENERIC_WRITE|SYNCHRONIZE, OBJ_INHERIT, &params->hStdOutput );
-    wine_server_fd_to_handle( 2, GENERIC_WRITE|SYNCHRONIZE, OBJ_INHERIT, &params->hStdError );
+    /* in single-process mode the launch gives the descriptors, and 0 to 2 are the host's */
+    if (paneport_mode) paneport_get_std_fds( fds );
+
+    wine_server_fd_to_handle( fds[0], GENERIC_READ|SYNCHRONIZE,  OBJ_INHERIT, &params->hStdInput );
+    wine_server_fd_to_handle( fds[1], GENERIC_WRITE|SYNCHRONIZE, OBJ_INHERIT, &params->hStdOutput );
+    wine_server_fd_to_handle( fds[2], GENERIC_WRITE|SYNCHRONIZE, OBJ_INHERIT, &params->hStdError );
 
     if (main_image_info.SubSystemType != IMAGE_SUBSYSTEM_WINDOWS_CUI)
         return;
 
     /* mark tty handles for kernelbase, see init_console */
-    if (params->hStdInput && isatty(0))
+    if (params->hStdInput && isatty(fds[0]))
     {
         params->ConsoleHandle = CONSOLE_HANDLE_SHELL;
         params->hStdInput = (HANDLE)((UINT_PTR)params->hStdInput | 1);
     }
-    if (params->hStdError && isatty(2))
+    if (params->hStdError && isatty(fds[2]))
     {
         params->ConsoleHandle = CONSOLE_HANDLE_SHELL;
         params->hStdError = (HANDLE)((UINT_PTR)params->hStdError | 1);
-        output_fd = 2;
+        output_fd = fds[2];
     }
-    if (params->hStdOutput && isatty(1))
+    if (params->hStdOutput && isatty(fds[1]))
     {
         params->ConsoleHandle = CONSOLE_HANDLE_SHELL;
         params->hStdOutput = (HANDLE)((UINT_PTR)params->hStdOutput | 1);
-        output_fd = 1;
+        output_fd = fds[1];
     }
     if (!params->ConsoleHandle)
         params->ConsoleHandle = CONSOLE_HANDLE_SHELL_NO_WINDOW;
@@ -1396,6 +1400,9 @@ static WCHAR *get_initial_directory(void)
     char *cwd;
     int size;
     WCHAR *ret = NULL;
+
+    /* in single-process mode the host's current folder is not the program's */
+    if (paneport_mode && (ret = paneport_initial_directory())) return ret;
 
     /* try to get it from the Unix cwd */
 
@@ -1897,7 +1904,8 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params(void)
     set_env_var( &env, &env_pos, &env_size, bootstrapW, ARRAY_SIZE(bootstrapW), valueW );
     is_prefix_bootstrap = TRUE;
     env[env_pos] = 0;
-    run_wineboot( env, env_pos );
+    if (paneport_mode) paneport_boot();
+    else run_wineboot( env, env_pos );
 
     /* reload environment now that wineboot has run */
     set_env_var( &env, &env_pos, &env_size, pathW, 4, path );  /* reset PATH */
@@ -1988,6 +1996,7 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params(void)
     free( env );
 
     get_initial_console( params );
+    if (paneport_mode) paneport_close_std_fds();
 
     return params;
 }

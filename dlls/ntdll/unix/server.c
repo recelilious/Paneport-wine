@@ -2,6 +2,7 @@
  * Wine server communication
  *
  * Copyright (C) 1998 Alexandre Julliard
+ * Changed for Paneport on 2026-11-23: in single-process mode, takes the server socket from the launch, makes each thread one that thread control can interrupt, skips the task port and the host's main thread, reports the start, and closes a process's descriptors at its end.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -129,6 +130,14 @@ static void fatal_error( const char *err, ... )
     va_list args;
 
     va_start( args, err );
+    if (paneport_mode)
+    {
+        char buffer[1024];
+
+        vsnprintf( buffer, sizeof(buffer), err, args );
+        va_end( args );
+        paneport_fatal( buffer );
+    }
     fprintf( stderr, "wine: " );
     vfprintf( stderr, err, args );
     va_end( args );
@@ -141,6 +150,18 @@ static void fatal_perror( const char *err, ... )
     va_list args;
 
     va_start( args, err );
+    if (paneport_mode)
+    {
+        char buffer[1024];
+        int error = errno;
+        size_t len;
+
+        vsnprintf( buffer, sizeof(buffer), err, args );
+        va_end( args );
+        len = strlen( buffer );
+        snprintf( buffer + len, sizeof(buffer) - len, ": %s", strerror( error ));
+        paneport_fatal( buffer );
+    }
     fprintf( stderr, "wine: " );
     vfprintf( stderr, err, args );
     perror( " " );
@@ -1565,6 +1586,7 @@ static int init_thread_pipe( struct thread_data *data )
     ss.ss_size  = signal_stack_size;
     ss.ss_flags = 0;
     sigaltstack( &ss, NULL );
+    if (paneport_mode) paneport_init_thread( data, get_unix_tid() );
 
     if (server_pipe( reply_pipe ) == -1) server_protocol_perror( "pipe" );
     if (server_pipe( data->wait_fd ) == -1) server_protocol_perror( "pipe" );
@@ -1600,6 +1622,32 @@ void process_exit_wrapper( int status )
 
 
 /***********************************************************************
+ *           paneport_close_process_fds
+ *
+ * Paneport's single-process mode, where the host's process goes on after a Windows process:
+ * closes what the process kept of the server's descriptors, its cached handles' descriptors
+ * and its server socket, so that their other ends see the end, as when a process exits.
+ */
+void paneport_close_process_fds(void)
+{
+    unsigned int entry, idx;
+    union fd_cache_entry cache;
+
+    for (entry = 0; entry < FD_CACHE_ENTRIES; entry++)
+    {
+        if (!fd_cache[entry]) continue;
+        for (idx = 0; idx < FD_CACHE_BLOCK_SIZE; idx++)
+        {
+            cache.data = interlocked_xchg64( &fd_cache[entry][idx].data, 0 );
+            if (cache.s.type != FD_TYPE_INVALID) close( cache.s.fd - 1 );
+        }
+    }
+    close( fd_socket );
+    fd_socket = -1;
+}
+
+
+/***********************************************************************
  *           server_init_process
  *
  * Start the server and create the initial socket pair.
@@ -1614,7 +1662,13 @@ void server_init_process( struct thread_data *data )
     struct sigaction sig_act;
 
     server_pid = -1;
-    if (env_socket)
+    if (paneport_mode)
+    {
+        /* the launch connected to the server's thread already */
+        fd_socket = paneport_server_socket;
+        paneport_server_socket = -1;
+    }
+    else if (env_socket)
     {
         fd_socket = atoi( env_socket );
         if (fcntl( fd_socket, F_SETFD, FD_CLOEXEC ) == -1)
@@ -1746,9 +1800,14 @@ void server_init_process_done(void)
     close( initial_cwd );
 
 #ifdef __APPLE__
-    send_server_task_port();
-    if ((status = apple_spawn_main_thread()))
-        ERR("Failed to spawn main thread, status %x\n", status);
+    /* in single-process mode the server has our task already, and the host's main thread is
+     * the host's */
+    if (!paneport_mode)
+    {
+        send_server_task_port();
+        if ((status = apple_spawn_main_thread()))
+            ERR("Failed to spawn main thread, status %x\n", status);
+    }
 #endif
 
     /* Install signal handlers; this cannot be done earlier, since we cannot
@@ -1768,6 +1827,7 @@ void server_init_process_done(void)
     SERVER_END_REQ;
 
     assert( !status );
+    if (paneport_mode) paneport_process_started();
     signal_start_thread( main_image_info.TransferAddress, peb, data->teb );
 }
 

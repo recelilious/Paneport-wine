@@ -3,6 +3,7 @@
  *
  * Copyright (C) 2020 Alexandre Julliard
  * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and adds __wine_jit_write_protect.
+ * Changed for Paneport on 2026-11-23: declares single-process mode, and gives a thread's data a record for its thread control.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -127,6 +128,7 @@ struct thread_data
     void        *start;             /* thread entry point */
     void        *param;             /* thread entry point parameter */
     struct list  entry;             /* entry in TEB list */
+    struct paneport_thread *paneport; /* Paneport: the thread's record for thread control */
     char         debug_info[0x800]; /* debug_info structure */
     char         signal_stack[];    /* signal stack */
     /* char kernel_stack[] */
@@ -295,6 +297,43 @@ extern NTSTATUS init_thread_stack( TEB *teb, ULONG_PTR limit, SIZE_T reserve_siz
 extern void DECLSPEC_NORETURN abort_thread( int status );
 extern void DECLSPEC_NORETURN abort_process( int status );
 extern void DECLSPEC_NORETURN exit_process( int status );
+
+/* paneport.c: Wine's single-process mode for Paneport */
+
+#define PANEPORT_IRQ_USR1 1  /* the server's SIGUSR1 */
+#define PANEPORT_IRQ_QUIT 2  /* the server's SIGQUIT */
+
+/* the registers that the trampoline of thread control saves, on arm64 */
+struct paneport_save_area
+{
+    ULONG64 x[31];    /* 0x000 x0 to x30 */
+    ULONG64 nzcv;     /* 0x0f8 */
+    ULONG64 restart;  /* 0x100 1 when a system call restarts */
+    ULONG64 fpcr;     /* 0x108 */
+    ULONG64 fpsr;     /* 0x110 */
+    ULONG64 pad;      /* 0x118 */
+    ULONG64 q[64];    /* 0x120 q0 to q31, low half first */
+};
+
+extern BOOL paneport_mode;
+extern int paneport_server_socket;
+extern void DECLSPEC_NORETURN paneport_fatal( const char *text );
+extern void paneport_init_thread( struct thread_data *data, int unix_tid );
+extern void paneport_exit_thread( struct thread_data *data );
+extern struct paneport_save_area *paneport_take_area( struct thread_data *data, ULONG64 *pc, ULONG64 *sp,
+                                                      sigset_t *mask );
+extern void paneport_defer( struct thread_data *data );
+extern LONG paneport_take_pending( struct thread_data *data, BOOL *deferred );
+extern void paneport_get_std_fds( int fds[3] );
+extern void paneport_close_std_fds(void);
+extern WCHAR *paneport_initial_directory(void);
+extern void paneport_process_started(void);
+extern void paneport_boot(void);
+extern void paneport_init_paths(void);
+extern void paneport_start_process( int argc, char *argv[] );
+extern char *paneport_server_library_path(void);
+extern char *paneport_nls_dir(void);
+extern void paneport_close_process_fds(void);
 extern void wait_suspend( CONTEXT *context );
 extern NTSTATUS send_debug_event( struct thread_data *data, EXCEPTION_RECORD *rec,
                                   CONTEXT *context, BOOL first_chance );

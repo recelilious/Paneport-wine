@@ -3,6 +3,7 @@
  *
  * Copyright (C) 2020 Alexandre Julliard
  * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and adds __wine_jit_write_protect.
+ * Changed for Paneport on 2026-11-23: starts a process on a thread of the host in single-process mode, where a fatal error goes to the host's log.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -134,6 +135,14 @@ static void fatal_error( const char *err, ... )
     va_list args;
 
     va_start( args, err );
+    if (paneport_mode)
+    {
+        char buffer[1024];
+
+        vsnprintf( buffer, sizeof(buffer), err, args );
+        va_end( args );
+        paneport_fatal( buffer );
+    }
     fprintf( stderr, "wine: " );
     vfprintf( stderr, err, args );
     va_end( args );
@@ -2145,4 +2154,61 @@ DECLSPEC_EXPORT void __wine_main( int argc, char *argv[] )
     apple_main_thread();
 #endif
     start_main_thread();
+}
+
+
+/***********************************************************************
+ *           paneport_init_paths
+ *
+ * Paneport's single-process mode: the paths of __wine_main, once per session.
+ */
+void paneport_init_paths(void)
+{
+    init_paths();
+}
+
+
+/***********************************************************************
+ *           paneport_start_process
+ *
+ * Paneport's single-process mode: what __wine_main does for a process, on a thread of the
+ * host that stands for the process's main thread. Nothing checks the command line or execs,
+ * and the host's main thread is left alone.
+ */
+void paneport_start_process( int argc, char *argv[] )
+{
+    main_argc = argc;
+    main_argv = argv;
+
+#ifdef RLIMIT_NOFILE
+    set_max_limit( RLIMIT_NOFILE );
+#endif
+    virtual_init();
+    init_environment();
+    start_main_thread();
+}
+
+
+/***********************************************************************
+ *           paneport_server_library_path
+ *
+ * Where single-process mode finds the wineserver as a library.
+ */
+char *paneport_server_library_path(void)
+{
+    if (bin_dir) return build_path( bin_dir, "wineserver.so" );
+    if (build_dir) return build_path( build_dir, "server/wineserver.so" );
+    return NULL;
+}
+
+
+/***********************************************************************
+ *           paneport_nls_dir
+ *
+ * The folder of the NLS files, for the wineserver of single-process mode.
+ */
+char *paneport_nls_dir(void)
+{
+    if (build_dir) return build_path( build_dir, "nls" );
+    return build_path( data_dir, "nls" );
 }

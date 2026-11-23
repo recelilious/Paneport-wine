@@ -2,6 +2,7 @@
  * NT threads support
  *
  * Copyright 1996, 2003 Alexandre Julliard
+ * Changed for Paneport on 2026-11-23: in single-process mode, a process's end closes its descriptors and ends its last thread instead of the host's process.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -1116,6 +1117,7 @@ static void contexts_from_server( CONTEXT *context, struct context_data server_c
 static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
 {
     struct thread_data *data = get_thread_data();
+    if (paneport_mode) paneport_exit_thread( data );
     close( data->alert_fd );
     close( data->wait_fd[0] );
     close( data->wait_fd[1] );
@@ -1507,6 +1509,12 @@ void abort_thread( int status )
  */
 void abort_process( int status )
 {
+    if (paneport_mode)
+    {
+        /* the host's process goes on; the server reports the process's end with its exit code */
+        paneport_close_process_fds();
+        pthread_exit_wrapper( status );
+    }
     _exit( get_unix_exit_code( status ));
 }
 
@@ -1541,6 +1549,7 @@ static DECLSPEC_NORETURN void exit_thread( int status )
 void exit_process( int status )
 {
     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
+    if (paneport_mode) abort_process( status );
     process_exit_wrapper( get_unix_exit_code( status ));
 }
 

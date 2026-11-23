@@ -1,3 +1,4 @@
+# Changed for Paneport on 2026-11-23: builds the Unix side of single-process mode, unix/paneport.c.
 EXTRADEFS = -D_NTSYSTEM_ -D_ACRTIMP= -DWINBASEAPI=
 MODULE    = ntdll.dll
 UNIXLIB   = ntdll.so
@@ -55,6 +56,7 @@ SOURCES = \
 	unix/file.c \
 	unix/loader.c \
 	unix/loadorder.c \
+	unix/paneport.c \
 	unix/process.c \
 	unix/registry.c \
 	unix/security.c \

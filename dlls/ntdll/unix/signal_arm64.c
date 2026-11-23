@@ -3,6 +3,7 @@
  *
  * Copyright 2010-2013 André Hentschel
  * Changed for Paneport on 2026-11-15, 2026-11-16 and 2026-11-22: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, takes the TEB from x18 again instead of TPIDR_EL0, and keeps Wine 11.20's prologues of the syscall and Unix call dispatchers, without the request's global variables.
+ * Changed for Paneport on 2026-11-23: in single-process mode, takes faults from the host's signal dispatcher and delivers thread control through SIGUSR2.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -59,6 +60,9 @@
 #include "wine/asm.h"
 #include "unix_private.h"
 #include "wine/debug.h"
+#ifdef __APPLE__
+#include <paneport/wine_bridge.h>
+#endif
 
 WINE_DEFAULT_DEBUG_CHANNEL(seh);
 
@@ -1497,6 +1501,77 @@ static void usr1_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 }
 
 
+#ifdef __APPLE__
+
+static struct sigaction paneport_usr2_previous;
+
+/**********************************************************************
+ *		paneport_take_interrupt
+ *
+ * Paneport's single-process mode: takes the interruption of thread control that a SIGUSR2
+ * carries (see paneport.c). Returns the signal whose handler runs now, 0 when the SIGUSR2
+ * carries none, or -1 when there is nothing more to do.
+ */
+static int paneport_take_interrupt( struct thread_data *data, ucontext_t *sigcontext )
+{
+    struct paneport_save_area *area;
+    ULONG64 pc, sp;
+    sigset_t mask;
+    BOOL deferred;
+    LONG pending;
+    int i;
+
+    if ((area = paneport_take_area( data, &pc, &sp, &mask )))
+    {
+        /* the context becomes the state at which the thread was stopped */
+        for (i = 0; i < 29; i++) REGn_sig( i, sigcontext ) = area->x[i];
+        FP_sig( sigcontext ) = area->x[29];
+        LR_sig( sigcontext ) = area->x[30];
+        SP_sig( sigcontext ) = sp;
+        PC_sig( sigcontext ) = area->restart ? pc - 4 : pc;
+        PSTATE_sig( sigcontext ) = (PSTATE_sig( sigcontext ) & ~0xf0000000) | (area->nzcv & 0xf0000000);
+        memcpy( sigcontext->uc_mcontext->__ns.__v, area->q, sizeof(area->q) );
+        sigcontext->uc_mcontext->__ns.__fpcr = area->fpcr;
+        sigcontext->uc_mcontext->__ns.__fpsr = area->fpsr;
+        sigcontext->uc_sigmask = mask;
+
+        /* where the thread had SIGUSR2 blocked, or ran a signal handler, the interruption waits
+         * in the kernel until the thread unblocks it, as the server's SIGUSR1 would */
+        if (sigismember( &mask, SIGUSR2 ) || is_inside_signal_stack( data, (void *)sp ))
+        {
+            paneport_defer( data );
+            sigaddset( &sigcontext->uc_sigmask, SIGUSR2 );
+            raise( SIGUSR2 );
+            return -1;
+        }
+    }
+    pending = paneport_take_pending( data, &deferred );
+    if (pending & PANEPORT_IRQ_QUIT) return SIGQUIT;
+    if (pending & PANEPORT_IRQ_USR1) return SIGUSR1;
+    return (area || deferred) ? -1 : 0;
+}
+
+
+/**********************************************************************
+ *		paneport_chain_usr2
+ *
+ * Paneport's single-process mode: a SIGUSR2 on a thread of the host goes to the handler that
+ * was there before Wine's.
+ */
+static void paneport_chain_usr2( int signal, siginfo_t *siginfo, void *context )
+{
+    if (paneport_usr2_previous.sa_flags & SA_SIGINFO)
+    {
+        if (paneport_usr2_previous.sa_sigaction)
+            paneport_usr2_previous.sa_sigaction( signal, siginfo, context );
+    }
+    else if (paneport_usr2_previous.sa_handler != SIG_DFL && paneport_usr2_previous.sa_handler != SIG_IGN)
+        paneport_usr2_previous.sa_handler( signal );
+}
+
+#endif
+
+
 /**********************************************************************
  *		usr2_handler
  *
@@ -1507,9 +1582,32 @@ static void usr2_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 
     ucontext_t *sigcontext = _sigcontext;
     struct thread_data *data = get_thread_data();
-    struct syscall_frame *frame = get_syscall_frame( data );
+    struct syscall_frame *frame;
     DWORD i;
 
+#ifdef __APPLE__
+    if (paneport_mode)
+    {
+        if (!data)
+        {
+            paneport_chain_usr2( signal, siginfo, _sigcontext );
+            return;
+        }
+        switch (paneport_take_interrupt( data, sigcontext ))
+        {
+        case -1:
+            return;
+        case SIGQUIT:
+            quit_handler( SIGQUIT, siginfo, sigcontext );
+            return;
+        case SIGUSR1:
+            usr1_handler( SIGUSR1, siginfo, sigcontext );
+            return;
+        }
+    }
+#endif
+
+    frame = get_syscall_frame( data );
     if (!is_inside_syscall( data, SP_sig(sigcontext) )) return;
     if (!frame) return;
 
@@ -1577,6 +1675,49 @@ void signal_free_thread( TEB *teb )
 }
 
 
+#ifdef __APPLE__
+
+extern int paneport_set_guest_fault_handler( pp_guest_fault_handler_t handler );
+
+/**********************************************************************
+ *		paneport_guest_fault
+ *
+ * Paneport's single-process mode: the host's signal dispatcher owns the fault signals and
+ * gives Wine the faults of its threads, in the faulting thread's signal context, to handle as
+ * Wine's own handlers would.
+ */
+static uint32_t paneport_guest_fault( pp_guest_fault_t *fault, void *user_data )
+{
+    if (fault->thread_mark != PP_THREAD_MARK_GUEST || !get_thread_data())
+        return PP_GUEST_FAULT_DECLINED;
+
+    switch (fault->signal)
+    {
+    case SIGSEGV:
+    case SIGBUS:
+        segv_handler( fault->signal, fault->signal_info, fault->context );
+        break;
+    case SIGILL:
+        ill_handler( fault->signal, fault->signal_info, fault->context );
+        break;
+    case SIGTRAP:
+        trap_handler( fault->signal, fault->signal_info, fault->context );
+        break;
+    case SIGFPE:
+        fpe_handler( fault->signal, fault->signal_info, fault->context );
+        break;
+    case SIGABRT:
+        abrt_handler( fault->signal, fault->signal_info, fault->context );
+        break;
+    default:
+        return PP_GUEST_FAULT_DECLINED;
+    }
+    return PP_GUEST_FAULT_HANDLED;
+}
+
+#endif
+
+
 /**********************************************************************
  *		signal_init_process
  */
@@ -1589,6 +1730,19 @@ void signal_init_process( TEB *teb )
 
     sig_act.sa_mask = server_block_set;
     sig_act.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK;
+
+#ifdef __APPLE__
+    if (paneport_mode)
+    {
+        /* the host's dispatcher keeps the fault signals, the server sends no SIGUSR1 or
+         * SIGQUIT, and no terminal sends SIGINT */
+        sig_act.sa_sigaction = usr2_handler;
+        if (sigaction( SIGUSR2, &sig_act, &paneport_usr2_previous ) == -1 ||
+            paneport_set_guest_fault_handler( paneport_guest_fault ))
+            paneport_fatal( "the signal handling of single-process mode could not be set up" );
+        return;
+    }
+#endif
 
     sig_act.sa_sigaction = int_handler;
     if (sigaction( SIGINT, &sig_act, NULL ) == -1) goto error;
