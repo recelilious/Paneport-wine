@@ -70,6 +70,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(process);
 
 BOOL paneport_mode = FALSE;
 int paneport_server_socket = -1;
+unsigned int paneport_umask = 022;  /* read once, before the server thread starts */
 
 static const pp_wine_bridge_t *bridge;
 static pthread_mutex_t paneport_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -856,6 +857,10 @@ DECLSPEC_EXPORT int32_t __wine_paneport_session_start( const pp_wine_bridge_t *h
         return PP_WINE_E_OUT_OF_MEMORY;
     }
     paneport_init_paths();
+
+    /* umask can only be read by setting it, which must not race with the server thread */
+    paneport_umask = umask( 0777 );
+    umask( paneport_umask );
 
     if ((config_fd = open( config_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC )) == -1 ||
         !prepare_prefix( config_fd ))

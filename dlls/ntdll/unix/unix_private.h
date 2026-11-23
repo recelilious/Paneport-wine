@@ -317,6 +317,7 @@ struct paneport_save_area
 
 extern BOOL paneport_mode;
 extern int paneport_server_socket;
+extern unsigned int paneport_umask;
 extern void DECLSPEC_NORETURN paneport_fatal( const char *text );
 extern void paneport_init_thread( struct thread_data *data, int unix_tid );
 extern void paneport_exit_thread( struct thread_data *data );

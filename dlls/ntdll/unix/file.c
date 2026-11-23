@@ -4,6 +4,7 @@
  * Copyright 1993 Erik Bos
  * Copyright 2003 Eric Pouech
  * Copyright 1996, 2004 Alexandre Julliard
+ * Changed for Paneport on 2026-11-23: in single-process mode, takes the umask that the session read before the server thread started.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -2984,8 +2985,12 @@ void init_files(void)
     ignore_file( "/sys" );
 #endif
     /* retrieve initial umask */
-    start_umask = umask( 0777 );
-    umask( start_umask );
+    if (paneport_mode) start_umask = paneport_umask;
+    else
+    {
+        start_umask = umask( 0777 );
+        umask( start_umask );
+    }
 
     if (!open_hkcu_key( "Software\\Wine", &key ))
     {
