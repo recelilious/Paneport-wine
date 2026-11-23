@@ -2,6 +2,7 @@ dnl Process this file with autoconf to produce a configure script.
 dnl Original author: Michael Patra
 dnl For detailed change history, see the git commit logs.
 dnl Changed for Paneport on 2026-11-15, 2026-11-16 and 2026-11-22: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, links the macOS loader so that macOS 27 starts it and keeps x18, and uses the dynamic shared user data in ARM64EC code too.
+dnl Changed for Paneport on 2026-11-23: links and installs the wineserver.so library of single-process mode.
 
 m4_define(WINE_VERSION,regexp(m4_include(VERSION),[version \([-.0-9A-Za-z]+\)],[\1]))
 
@@ -979,6 +980,7 @@ AC_SUBST(LDEXECFLAGS,"")
 AC_SUBST(EXTRACFLAGS,"")
 AC_SUBST(UNIXDLLFLAGS,"-fPIC")
 AC_SUBST(UNIXLDFLAGS,["-shared -Wl,-Bsymbolic -Wl,-soname,\$(UNIXLIB)"])
+AC_SUBST(WINESERVER_SO_LDFLAGS,["-shared -Wl,-soname,wineserver.so"])
 AC_SUBST(TOP_INSTALL_LIB,"")
 AC_SUBST(TOP_INSTALL_DEV,"")
 AC_SUBST(WINELOADER_LDFLAGS,"")
@@ -1062,6 +1064,7 @@ case $host_os in
     fi
 
     UNIXLDFLAGS="-dynamiclib -install_name @rpath/\$(UNIXLIB) -Wl,-rpath,@loader_path\/"
+    WINESERVER_SO_LDFLAGS="-dynamiclib -install_name @rpath/wineserver.so"
     AC_SUBST(WINELOADER_DEPENDS,"wine_info.plist")
     ;;
 
@@ -3775,7 +3778,8 @@ programs/winedbg/winedbg \
 programs/winefile/winefile \
 programs/winemine/winemine \
 programs/winepath/winepath \
-server/wineserver"
+server/wineserver \
+server/wineserver.so"
 
     case $host_os in
       cygwin*|mingw32*|darwin*|linux-android*) ;;

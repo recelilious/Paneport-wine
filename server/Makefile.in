@@ -1,4 +1,5 @@
-PROGRAMS = wineserver
+# Changed for Paneport on 2026-11-23: also builds the server as the library wineserver.so, for single-process mode.
+PROGRAMS = wineserver wineserver.so
 
 SOURCES = \
 	alpc.c \
@@ -26,6 +27,7 @@ SOURCES = \
 	mutex.c \
 	named_pipe.c \
 	object.c \
+	paneport.c \
 	process.c \
 	procfs.c \
 	ptrace.c \
@@ -51,7 +53,9 @@ SOURCES = \
 	wineserver.man.in \
 	winstation.c
 
-UNIX_CFLAGS = $(INOTIFY_CFLAGS)
+UNIX_CFLAGS = $(INOTIFY_CFLAGS) $(UNIXDLLFLAGS)
 UNIX_LIBS   = $(LDEXECFLAGS) $(RT_LIBS) $(INOTIFY_LIBS) $(PROCSTAT_LIBS)
+
+wineserver_so_LDFLAGS = $(WINESERVER_SO_LDFLAGS)
 
 unicode_EXTRADEFS = -DBINDIR="\"${bindir}\"" -DDATADIR="\"${datadir}\""

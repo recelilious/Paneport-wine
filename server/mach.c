@@ -3,6 +3,7 @@
  *
  * Copyright (C) 1999, 2006 Alexandre Julliard
  * Copyright (C) 2006 Ken Thomases for CodeWeavers
+ * Changed for Paneport on 2026-11-23: in single-process mode, uses the server's own task port and has the host interrupt threads instead of signaling them.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -39,6 +40,7 @@
 #include "process.h"
 #include "thread.h"
 #include "request.h"
+#include "paneport.h"
 
 #ifdef USE_MACH
 
@@ -124,6 +126,15 @@ void init_process_tracing( struct process *process )
         mach_msg_port_descriptor_t  task_port;
         mach_msg_trailer_t          trailer; /* only present on receive */
     } msg;
+
+    if (paneport_mode)
+    {
+        /* every process is this one, and no client sends its task port */
+        if (!process->trace_data &&
+            mach_port_mod_refs( mach_task_self(), mach_task_self(), MACH_PORT_RIGHT_SEND, 1 ) == KERN_SUCCESS)
+            process->trace_data = mach_task_self();
+        return;
+    }
 
     for (;;)
     {
@@ -366,13 +377,18 @@ int send_thread_signal( struct thread *thread, int sig )
     int ret = -1;
     mach_port_t process_port = get_process_port( thread->process );
 
-    if (thread->unix_pid != -1 && process_port)
+    if (thread->unix_pid != -1 && (process_port || paneport_mode))
     {
         mach_msg_type_name_t type;
         mach_port_t port;
 
-        if (!mach_port_extract_right( process_port, thread->unix_tid,
-                                      MACH_MSG_TYPE_COPY_SEND, &port, &type ))
+        if (paneport_mode)  /* the thread is one of ours: the host interrupts it without a signal */
+        {
+            if (paneport_interrupt_thread( thread->unix_tid, sig )) ret = 0;
+            else errno = ESRCH;
+        }
+        else if (!mach_port_extract_right( process_port, thread->unix_tid,
+                                           MACH_MSG_TYPE_COPY_SEND, &port, &type ))
         {
             ret = __pthread_kill( port, sig );
             mach_port_deallocate( mach_task_self(), port );
@@ -488,8 +504,8 @@ int write_process_memory( struct process *process, client_ptr_t ptr, data_size_t
         }
 
         /* The following operations should seem atomic from the perspective of the
-         * target process. */
-        if ((ret = task_suspend( process_port )) != KERN_SUCCESS)
+         * target process. Never suspend our own task, as in single-process mode. */
+        if (process_port != mach_task_self() && (ret = task_suspend( process_port )) != KERN_SUCCESS)
             goto out;
 
         /* Iterate over all applicable memory regions until the write is completed. */
@@ -535,7 +551,7 @@ int write_process_memory( struct process *process, client_ptr_t ptr, data_size_t
             remaining_size        -= write_size;
         }
 
-        task_resume( process_port );
+        if (process_port != mach_task_self()) task_resume( process_port );
     }
 
 out:

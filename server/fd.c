@@ -2,6 +2,7 @@
  * Server-side file descriptor management
  *
  * Copyright (C) 2000, 2003 Alexandre Julliard
+ * Changed for Paneport on 2026-11-23: opens files relative to the root directory's fd instead of changing the current directory, and ends the main loop on request in single-process mode.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -100,6 +101,7 @@
 #include "handle.h"
 #include "process.h"
 #include "request.h"
+#include "paneport.h"
 
 #include "winternl.h"
 #include "winioctl.h"
@@ -456,8 +458,22 @@ static int nb_users;                        /* count of array entries actually i
 static int active_users;                    /* current number of active users */
 static int allocated_users;                 /* count of allocated entries in the array */
 static struct fd **freelist;                /* list of free entries in the array */
+static int main_loop_quit;                  /* the main loop ends, in single-process mode */
 
 static int get_next_timeout( struct timespec *ts );
+
+/* end the main loop at its next iteration, in single-process mode */
+void quit_main_loop(void)
+{
+    main_loop_quit = 1;
+}
+
+/* the main loop goes on while it has users, or in single-process mode until it is ended */
+static inline int main_loop_running(void)
+{
+    if (paneport_mode) return !main_loop_quit;
+    return active_users;
+}
 
 static inline void fd_poll_event( struct fd *fd, int event )
 {
@@ -539,11 +555,11 @@ static inline void main_loop_epoll(void)
 
     if (epoll_fd == -1) return;
 
-    while (active_users)
+    while (main_loop_running())
     {
         timeout = get_next_timeout( &ts );
 
-        if (!active_users) break;  /* last user removed by a timeout */
+        if (!main_loop_running()) break;  /* last user removed, or the loop ended, by a timeout */
         if (epoll_fd == -1) break;  /* an error occurred with epoll */
 
 #ifdef HAVE_EPOLL_PWAIT2
@@ -644,11 +660,11 @@ static inline void main_loop_epoll(void)
 
     if (kqueue_fd == -1) return;
 
-    while (active_users)
+    while (main_loop_running())
     {
         timeout = get_next_timeout( &ts );
 
-        if (!active_users) break;  /* last user removed by a timeout */
+        if (!main_loop_running()) break;  /* last user removed, or the loop ended, by a timeout */
         if (kqueue_fd == -1) break;  /* an error occurred with kqueue */
 
         ret = kevent( kqueue_fd, NULL, 0, events, ARRAY_SIZE( events ), timeout == -1 ? NULL : &ts );
@@ -739,12 +755,12 @@ static inline void main_loop_epoll(void)
 
     if (port_fd == -1) return;
 
-    while (active_users)
+    while (main_loop_running())
     {
         timeout = get_next_timeout( &ts );
         nget = 1;
 
-        if (!active_users) break;  /* last user removed by a timeout */
+        if (!main_loop_running()) break;  /* last user removed, or the loop ended, by a timeout */
         if (port_fd == -1) break;  /* an error occurred with event completion */
 
         ret = port_getn( port_fd, events, ARRAY_SIZE( events ), &nget, timeout == -1 ? NULL : &ts );
@@ -927,11 +943,11 @@ void main_loop(void)
     main_loop_epoll();
     /* fall through to normal poll loop */
 
-    while (active_users)
+    while (main_loop_running())
     {
         timeout = get_next_timeout( NULL );
 
-        if (!active_users) break;  /* last user removed by a timeout */
+        if (!main_loop_running()) break;  /* last user removed, or the loop ended, by a timeout */
 
         ret = poll( pollfd, nb_users, timeout );
         set_current_time();
@@ -1876,7 +1892,7 @@ struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_nam
     struct stat st;
     struct closed_fd *closed_fd;
     struct fd *fd;
-    int root_fd = -1;
+    int root_fd = AT_FDCWD;
     int rw_mode;
     char *path;
 
@@ -1896,21 +1912,16 @@ struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_nam
         return NULL;
     }
 
+    /* names are relative to the root directory, if any */
     if (root)
     {
         if ((root_fd = get_unix_fd( root )) == -1) goto error;
-        if (fchdir( root_fd ) == -1)
-        {
-            file_set_error();
-            root_fd = -1;
-            goto error;
-        }
     }
 
     /* create the directory if needed */
     if ((options & FILE_DIRECTORY_FILE) && (flags & O_CREAT))
     {
-        if (mkdir( name, *mode ) == -1)
+        if (mkdirat( root_fd, name, *mode ) == -1)
         {
             if (errno != EEXIST || (flags & O_EXCL))
             {
@@ -1928,13 +1939,13 @@ struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_nam
     }
     else rw_mode = O_RDONLY;
 
-    if ((fd->unix_fd = open( name, rw_mode | (flags & ~O_TRUNC), *mode )) == -1)
+    if ((fd->unix_fd = openat( root_fd, name, rw_mode | (flags & ~O_TRUNC), *mode )) == -1)
     {
         /* if we tried to open a directory for write access, retry read-only */
         if (errno == EISDIR)
         {
             if ((access & FILE_UNIX_WRITE_ACCESS) || (flags & O_CREAT))
-                fd->unix_fd = open( name, O_RDONLY | (flags & ~(O_TRUNC | O_CREAT | O_EXCL)), *mode );
+                fd->unix_fd = openat( root_fd, name, O_RDONLY | (flags & ~(O_TRUNC | O_CREAT | O_EXCL)), *mode );
         }
 
         if (fd->unix_fd == -1)
@@ -2042,13 +2053,11 @@ struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_nam
     }
 #endif
 
-    if (root_fd != -1) fchdir( server_dir_fd ); /* go back to the server dir */
     return fd;
 
 error:
     release_object( fd );
     free( closed_fd );
-    if (root_fd != -1) fchdir( server_dir_fd ); /* go back to the server dir */
     return NULL;
 }
 

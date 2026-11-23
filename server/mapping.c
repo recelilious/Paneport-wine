@@ -2,6 +2,7 @@
  * Server-side file mapping management
  *
  * Copyright (C) 1999 Alexandre Julliard
+ * Changed for Paneport on 2026-11-23: creates temporary files relative to the directory's fd instead of changing the current directory.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -278,7 +279,7 @@ int grow_file( int unix_fd, file_pos_t new_size )
 }
 
 /* simplified version of mkstemps() */
-static int make_temp_file( char name[16] )
+static int make_temp_file( int dir_fd, char name[16] )
 {
     static unsigned int value;
     int i, fd = -1;
@@ -287,19 +288,19 @@ static int make_temp_file( char name[16] )
     for (i = 0; i < 0x8000 && fd < 0; i++, value += 7777)
     {
         snprintf( name, 16, "tmpmap-%08x", value );
-        fd = open( name, O_RDWR | O_CREAT | O_EXCL, 0600 );
+        fd = openat( dir_fd, name, O_RDWR | O_CREAT | O_EXCL, 0600 );
     }
     return fd;
 }
 
-/* check if the current directory allows exec mappings */
-static int check_current_dir_for_exec(void)
+/* check if a directory allows exec mappings */
+static int check_dir_for_exec( int dir_fd )
 {
     int fd;
     char tmpfn[16];
     void *ret = MAP_FAILED;
 
-    fd = make_temp_file( tmpfn );
+    fd = make_temp_file( dir_fd, tmpfn );
     if (fd == -1) return 0;
     if (grow_file( fd, 1 ))
     {
@@ -307,7 +308,7 @@ static int check_current_dir_for_exec(void)
         if (ret != MAP_FAILED) munmap( ret, get_page_size() );
     }
     close( fd );
-    unlink( tmpfn );
+    unlinkat( dir_fd, tmpfn, 0 );
     return (ret != MAP_FAILED);
 }
 
@@ -328,19 +329,16 @@ static int create_temp_file( file_pos_t size )
     if (temp_dir_fd == -1)
     {
         temp_dir_fd = server_dir_fd;
-        if (!check_current_dir_for_exec())
+        if (!check_dir_for_exec( server_dir_fd ))
         {
             /* the server dir is noexec, try the config dir instead */
-            fchdir( config_dir_fd );
-            if (check_current_dir_for_exec())
+            /* if neither works, fall back to server dir */
+            if (check_dir_for_exec( config_dir_fd ))
                 temp_dir_fd = config_dir_fd;
-            else  /* neither works, fall back to server dir */
-                fchdir( server_dir_fd );
         }
     }
-    else if (temp_dir_fd != server_dir_fd) fchdir( temp_dir_fd );
 
-    fd = make_temp_file( tmpfn );
+    fd = make_temp_file( temp_dir_fd, tmpfn );
     if (fd != -1)
     {
         if (!grow_file( fd, size ))
@@ -348,11 +346,10 @@ static int create_temp_file( file_pos_t size )
             close( fd );
             fd = -1;
         }
-        unlink( tmpfn );
+        unlinkat( temp_dir_fd, tmpfn, 0 );
     }
     else file_set_error();
 
-    if (temp_dir_fd != server_dir_fd) fchdir( server_dir_fd );
     return fd;
 }
 

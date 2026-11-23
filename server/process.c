@@ -2,6 +2,7 @@
  * Server-side process management
  *
  * Copyright (C) 1998 Alexandre Julliard
+ * Changed for Paneport on 2026-11-23: in single-process mode, never sends SIGKILL, reports the end of each process to the host, and terminates processes for the host.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -63,6 +64,7 @@
 #include "request.h"
 #include "user.h"
 #include "security.h"
+#include "paneport.h"
 
 /* process object */
 
@@ -582,7 +584,8 @@ static void process_sigkill( void *private )
 static void start_sigkill_timer( struct process *process )
 {
     grab_object( process );
-    if (process->unix_pid != -1)
+    /* in single-process mode the Unix process is this one, never to be killed: the process is dead */
+    if (process->unix_pid != -1 && !paneport_mode)
         process->sigkill_timeout = add_timeout_user( -process->sigkill_delay, process_sigkill, process );
     else
         process_died( process );
@@ -901,6 +904,26 @@ static void kill_all_processes(void)
     }
 }
 
+/* terminate a process as TerminateProcess from another process does, or every process for id 0 */
+void terminate_process_from_id( process_id_t id, int exit_code )
+{
+    struct process *process;
+    struct list *ptr;
+
+    if (!id)
+    {
+        while ((ptr = list_head( &process_list )))
+        {
+            process = LIST_ENTRY( ptr, struct process, entry );
+            terminate_process( process, NULL, exit_code );
+        }
+        return;
+    }
+    if (!(process = get_process_from_id( id ))) return;
+    terminate_process( process, NULL, exit_code );
+    release_object( process );
+}
+
 /* kill all processes being attached to a console renderer */
 void kill_console_processes( struct thread *renderer, int exit_code )
 {
@@ -922,6 +945,8 @@ void kill_console_processes( struct thread *renderer, int exit_code )
 /* a process has been killed (i.e. its last thread died) */
 static void process_killed( struct process *process )
 {
+    int first_end = !process->end_time;  /* a new first thread could revive it */
+
     assert( list_empty( &process->thread_list ));
     process->end_time = current_time;
     close_process_desktop( process );
@@ -942,6 +967,7 @@ static void process_killed( struct process *process )
     release_job_process( process );
     start_sigkill_timer( process );
     signal_sync( process->sync );
+    if (paneport_mode && first_end) paneport_process_ended( process );
 }
 
 /* add a thread to a process running threads list */

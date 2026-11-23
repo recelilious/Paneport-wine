@@ -2,6 +2,7 @@
  * Server-side request handling
  *
  * Copyright (C) 1998 Alexandre Julliard
+ * Changed for Paneport on 2026-11-23: in single-process mode, logs fatal errors and aborts, and ends the server's thread instead of exiting.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -60,6 +61,7 @@
 #include "security.h"
 #include "handle.h"
 #include "request_handlers.h"
+#include "paneport.h"
 
 /* Some versions of glibc don't define this */
 #ifndef SCM_RIGHTS
@@ -123,6 +125,7 @@ void fatal_error( const char *err, ... )
     va_list args;
 
     va_start( args, err );
+    if (paneport_mode) paneport_fatal_error( err, args );  /* logs it and aborts */
     fprintf( stderr, "wineserver: " );
     vfprintf( stderr, err, args );
     va_end( args );
@@ -889,6 +892,11 @@ static void close_socket_timeout( void *arg )
     flush_registry();
     if (debug_level) fprintf( stderr, "wineserver: exiting (pid=%ld)\n", (long) getpid() );
 
+    if (paneport_mode)  /* the server's thread returns instead */
+    {
+        paneport_end_server();
+        return;
+    }
 #ifdef DEBUG_OBJECTS
     close_objects();  /* shut down everything properly */
 #endif
@@ -903,6 +911,7 @@ void close_master_socket( timeout_t timeout )
         release_object( master_socket );
         master_socket = NULL;
     }
+    if (paneport_mode) paneport_close_listener();  /* its counterpart refuses new clients too */
     if (master_timeout)  /* cancel previous timeout */
         remove_timeout_user( master_timeout );
 

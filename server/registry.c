@@ -2,6 +2,7 @@
  * Server-side registry management
  *
  * Copyright (C) 1999 Alexandre Julliard
+ * Changed for Paneport on 2026-11-23: loads and saves the registry relative to the config dir's fd instead of changing the current directory.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -1751,9 +1752,12 @@ static void load_registry( struct key *key, obj_handle_t handle )
 /* load one of the initial registry files */
 static int load_init_registry_from_file( const char *filename, struct key *key )
 {
-    FILE *f;
+    FILE *f = NULL;
+    int fd;
 
-    if ((f = fopen( filename, "r" )))
+    if ((fd = openat( config_dir_fd, filename, O_RDONLY )) != -1 && !(f = fdopen( fd, "r" )))
+        close( fd );
+    if (f)
     {
         load_keys( key, filename, f, 0 );
         fclose( f );
@@ -1865,10 +1869,6 @@ void init_registry(void)
                                     .attr = OBJ_PERMANENT, .init_data = &data };
 
 
-    /* switch to the config dir */
-
-    if (fchdir( config_dir_fd ) == -1) fatal_error( "chdir to config dir: %s\n", strerror( errno ));
-
     /* create the root key */
     root_key = create_named_object( &params );
     assert( root_key );
@@ -1949,21 +1949,18 @@ void init_registry(void)
 
     /* create windows directories */
 
-    if (!mkdir( "drive_c/windows", 0777 ))
+    if (!mkdirat( config_dir_fd, "drive_c/windows", 0777 ))
     {
-        mkdir( "drive_c/windows/system32", 0777 );
+        mkdirat( config_dir_fd, "drive_c/windows/system32", 0777 );
         for (i = 1; i < supported_machines_count; i++)
         {
             switch (supported_machines[i])
             {
-            case IMAGE_FILE_MACHINE_I386:  mkdir( "drive_c/windows/syswow64", 0777 ); break;
-            case IMAGE_FILE_MACHINE_ARMNT: mkdir( "drive_c/windows/sysarm32", 0777 ); break;
+            case IMAGE_FILE_MACHINE_I386:  mkdirat( config_dir_fd, "drive_c/windows/syswow64", 0777 ); break;
+            case IMAGE_FILE_MACHINE_ARMNT: mkdirat( config_dir_fd, "drive_c/windows/sysarm32", 0777 ); break;
             }
         }
     }
-
-    /* go back to the server dir */
-    if (fchdir( server_dir_fd ) == -1) fatal_error( "chdir to server dir: %s\n", strerror( errno ));
 }
 
 /* save a registry branch to a file */
@@ -2029,11 +2026,12 @@ static int save_branch( struct key *key, const char *filename )
 
     /* test the file type */
 
-    if ((fd = open( filename, O_WRONLY )) != -1)
+    if ((fd = openat( config_dir_fd, filename, O_WRONLY )) != -1)
     {
         /* if file is not a regular file or has multiple links or is accessed
          * via symbolic links, write directly into it; otherwise use a temp file */
-        if (!lstat( filename, &st ) && (!S_ISREG(st.st_mode) || st.st_nlink > 1))
+        if (!fstatat( config_dir_fd, filename, &st, AT_SYMLINK_NOFOLLOW ) &&
+            (!S_ISREG(st.st_mode) || st.st_nlink > 1))
         {
             ftruncate( fd, 0 );
             goto save;
@@ -2046,7 +2044,7 @@ static int save_branch( struct key *key, const char *filename )
     for (;;)
     {
         snprintf( tmp, sizeof(tmp), "reg%lx%04x.tmp", (long) getpid(), count++ );
-        if ((fd = open( tmp, O_CREAT | O_EXCL | O_WRONLY, 0666 )) != -1) break;
+        if ((fd = openat( config_dir_fd, tmp, O_CREAT | O_EXCL | O_WRONLY, 0666 )) != -1) break;
         if (errno != EEXIST) goto done;
         close( fd );
     }
@@ -2056,7 +2054,7 @@ static int save_branch( struct key *key, const char *filename )
  save:
     if (!(f = fdopen( fd, "w" )))
     {
-        if (tmp[0]) unlink( tmp );
+        if (tmp[0]) unlinkat( config_dir_fd, tmp, 0 );
         close( fd );
         goto done;
     }
@@ -2073,8 +2071,8 @@ static int save_branch( struct key *key, const char *filename )
     if (tmp[0])
     {
         /* if successfully written, rename to final name */
-        if (ret) ret = !rename( tmp, filename );
-        if (!ret) unlink( tmp );
+        if (ret) ret = !renameat( config_dir_fd, tmp, config_dir_fd, filename );
+        if (!ret) unlinkat( config_dir_fd, tmp, 0 );
     }
 
 done:
@@ -2087,11 +2085,9 @@ static void periodic_save( void *arg )
 {
     int i;
 
-    if (fchdir( config_dir_fd ) == -1) return;
     save_timeout_user = NULL;
     for (i = 0; i < save_branch_count; i++)
         save_branch( save_branch_info[i].key, save_branch_info[i].filename );
-    if (fchdir( server_dir_fd ) == -1) fatal_error( "chdir to server dir: %s\n", strerror( errno ));
     set_periodic_save_timer();
 }
 
@@ -2107,7 +2103,6 @@ void flush_registry(void)
 {
     int i;
 
-    if (fchdir( config_dir_fd ) == -1) return;
     for (i = 0; i < save_branch_count; i++)
     {
         if (!save_branch( save_branch_info[i].key, save_branch_info[i].filename ))
@@ -2117,7 +2112,6 @@ void flush_registry(void)
             perror( " " );
         }
     }
-    if (fchdir( server_dir_fd ) == -1) fatal_error( "chdir to server dir: %s\n", strerror( errno ));
 }
 
 

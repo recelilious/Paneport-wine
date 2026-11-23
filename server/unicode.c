@@ -2,6 +2,7 @@
  * Unicode routines for use inside the server
  *
  * Copyright (C) 1999 Alexandre Julliard
+ * Changed for Paneport on 2026-11-23: takes the NLS folder from the host in single-process mode.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -38,6 +39,7 @@
 #include "request.h"
 #include "unicode.h"
 #include "file.h"
+#include "paneport.h"
 
 /* number of following bytes in sequence based on first byte value (for bytes above 0x7f) */
 static const char utf8_length[128] =
@@ -338,7 +340,8 @@ struct fd *load_intl_file(void)
     int unix_fd;
     mode_t mode = 0600;
 
-    nls_dirs[0] = get_nls_dir();
+    /* in single-process mode the executable is the host's, and the host names the folder */
+    nls_dirs[0] = paneport_mode ? paneport_get_nls_dir() : get_nls_dir();
     for (i = 0; i < ARRAY_SIZE( nls_dirs ); i++)
     {
         if (!nls_dirs[i]) continue;

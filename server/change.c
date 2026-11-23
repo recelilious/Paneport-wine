@@ -3,6 +3,7 @@
  *
  * Copyright (C) 1998 Alexandre Julliard
  * Copyright (C) 2006 Mike McCormack
+ * Changed for Paneport on 2026-11-23: leaves the signal mask alone in single-process mode.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -46,6 +47,7 @@
 #include "request.h"
 #include "process.h"
 #include "security.h"
+#include "paneport.h"
 #include "winternl.h"
 
 /* dnotify support */
@@ -245,15 +247,16 @@ static void dnotify_adjust_changes( struct dir *dir )
 }
 
 /* insert change in the global list */
+/* in single-process mode no SIGIO handler reads the list, and the mask is the host's */
 static inline void insert_change( struct dir *dir )
 {
     sigset_t sigset;
 
     sigemptyset( &sigset );
     sigaddset( &sigset, SIGIO );
-    sigprocmask( SIG_BLOCK, &sigset, NULL );
+    if (!paneport_mode) sigprocmask( SIG_BLOCK, &sigset, NULL );
     list_add_head( &change_list, &dir->entry );
-    sigprocmask( SIG_UNBLOCK, &sigset, NULL );
+    if (!paneport_mode) sigprocmask( SIG_UNBLOCK, &sigset, NULL );
 }
 
 /* remove change from the global list */
@@ -263,9 +266,9 @@ static inline void remove_change( struct dir *dir )
 
     sigemptyset( &sigset );
     sigaddset( &sigset, SIGIO );
-    sigprocmask( SIG_BLOCK, &sigset, NULL );
+    if (!paneport_mode) sigprocmask( SIG_BLOCK, &sigset, NULL );
     list_remove( &dir->entry );
-    sigprocmask( SIG_UNBLOCK, &sigset, NULL );
+    if (!paneport_mode) sigprocmask( SIG_UNBLOCK, &sigset, NULL );
 }
 
 static void dir_dump( struct object *obj, int verbose )

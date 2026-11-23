@@ -12,6 +12,7 @@
 # This configure script is free software; the Free Software Foundation
 # gives unlimited permission to copy, distribute and modify it.
 # Changed for Paneport on 2026-11-15, 2026-11-16 and 2026-11-22: carries the hunks of Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, links the macOS loader so that macOS 27 starts it and keeps x18, and uses the dynamic shared user data in ARM64EC code too; edited by hand, not regenerated.
+# Changed for Paneport on 2026-11-23: links and installs the wineserver.so library of single-process mode; edited by hand, not regenerated.
 ## -------------------- ##
 ## M4sh Initialization. ##
 ## -------------------- ##
@@ -778,6 +779,7 @@ WINEPRELOADER_LDFLAGS
 WINELOADER_LDFLAGS
 TOP_INSTALL_DEV
 TOP_INSTALL_LIB
+WINESERVER_SO_LDFLAGS
 UNIXLDFLAGS
 UNIXDLLFLAGS
 EXTRACFLAGS
@@ -12105,6 +12107,8 @@ UNIXDLLFLAGS="-fPIC"
 
 UNIXLDFLAGS="-shared -Wl,-Bsymbolic -Wl,-soname,\$(UNIXLIB)"
 
+WINESERVER_SO_LDFLAGS="-shared -Wl,-soname,wineserver.so"
+
 TOP_INSTALL_LIB=""
 
 TOP_INSTALL_DEV=""
@@ -12517,6 +12521,7 @@ fi
     fi
 
     UNIXLDFLAGS="-dynamiclib -install_name @rpath/\$(UNIXLIB) -Wl,-rpath,@loader_path\/"
+    WINESERVER_SO_LDFLAGS="-dynamiclib -install_name @rpath/wineserver.so"
     WINELOADER_DEPENDS="wine_info.plist"
 
     ;;
@@ -23190,7 +23195,8 @@ programs/winedbg/winedbg \
 programs/winefile/winefile \
 programs/winemine/winemine \
 programs/winepath/winepath \
-server/wineserver"
+server/wineserver \
+server/wineserver.so"
 
     case $host_os in
       cygwin*|mingw32*|darwin*|linux-android*) ;;
@@ -24022,6 +24028,7 @@ LDEXECFLAGS = $LDEXECFLAGS
 EXTRACFLAGS = $EXTRACFLAGS
 UNIXDLLFLAGS = $UNIXDLLFLAGS
 UNIXLDFLAGS = $UNIXLDFLAGS
+WINESERVER_SO_LDFLAGS = $WINESERVER_SO_LDFLAGS
 TOP_INSTALL_LIB = $TOP_INSTALL_LIB
 TOP_INSTALL_DEV = $TOP_INSTALL_DEV
 WINELOADER_LDFLAGS = $WINELOADER_LDFLAGS
