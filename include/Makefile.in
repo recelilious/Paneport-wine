@@ -1,3 +1,4 @@
+# Changed for Paneport on 2026-11-23: lists the headers of single-process mode, wine/paneport.h and wine/server_paneport.h.
 SOURCES = \
 	accctrl.h \
 	access.idl \
@@ -1140,10 +1141,12 @@ SOURCES = \
 	wine/nsi.h \
 	wine/opengl_driver.h \
 	wine/orpc.idl \
+	wine/paneport.h \
 	wine/plugplay.idl \
 	wine/rbtree.h \
 	wine/schrpc.idl \
 	wine/server.h \
+	wine/server_paneport.h \
 	wine/server_protocol.h \
 	wine/strmbase.h \
 	wine/svcctl.idl \

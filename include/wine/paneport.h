@@ -37,7 +37,7 @@
 
 #include <stdint.h>
 
-#include "paneport/wine_bridge.h"
+#include <paneport/wine_bridge.h>
 
 #ifdef __cplusplus
 extern "C" {
