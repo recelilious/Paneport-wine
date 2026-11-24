@@ -3,7 +3,7 @@
  *
  * Copyright 1996, 1998 Alexandre Julliard
  * Copyright 2003       Eric Pouech
- * Changed for Paneport on 2026-11-23: in single-process mode, takes the standard handles from the launch, starts in the program's folder, and runs the boot step in the process instead of wineboot.
+ * Changed for Paneport on 2026-11-23 and 2026-11-24: in single-process mode, takes the standard handles from the launch, starts in the program's folder, runs the boot step in the process instead of wineboot, and runs a program not at its base instead of starting it through start.exe.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -1918,6 +1918,10 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params(void)
 
     get_full_path( main_argv[1], curdir, &nt_name );
     status = load_main_exe( &nt_name, 0 );
+    /* in single-process mode the host's own mappings may hold the image's base, and start.exe
+     * could only start the program in another process: the PE loader relocates the image when
+     * it builds the main module, as it relocates a dll */
+    if (paneport_mode && status == STATUS_IMAGE_NOT_AT_BASE) status = STATUS_SUCCESS;
     /* fail only if the file contained an explicit path */
     if (status == STATUS_DLL_NOT_FOUND &&
         (strpbrk( main_argv[1], "/\\" ) || (main_argv[1][0] && main_argv[1][1] == ':')))
@@ -1937,6 +1941,12 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params(void)
             free( loader );
             status = STATUS_INVALID_IMAGE_FORMAT;
         }
+    }
+
+    if (status && paneport_mode)
+    {
+        MESSAGE( "wine: cannot start %s in single-process mode: %08x\n", debugstr_a(main_argv[1]), status );
+        NtTerminateProcess( GetCurrentProcess(), status );
     }
 
     if (status)  /* try launching it through start.exe */
