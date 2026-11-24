@@ -4,6 +4,7 @@
  * Copyright 1995, 2003 Alexandre Julliard
  * Copyright 2002 Dmitry Timoshkov for CodeWeavers
  * Changed for Paneport on 2026-11-15 and 2026-11-16: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, without its use of TPIDR_EL0.
+ * Changed for Paneport on 2026-11-24: changes the protection of every page of a section's span while it relocates an image, and restores only the protections that it changed.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -2175,6 +2176,24 @@ static void update_load_config( void *module )
 }
 
 
+/*************************************************************************
+ *		get_section_span
+ *
+ * The size of the pages that a section covers, up to its section alignment. A host page larger
+ * than a page takes the union of its pages' protections, so changing only a section's raw data
+ * would leave the rest of its last host page executable, and the union writable and executable,
+ * which hosts with W^X refuse.
+ */
+static SIZE_T get_section_span( const IMAGE_NT_HEADERS *nt, const IMAGE_SECTION_HEADER *sec )
+{
+    SIZE_T size = max( sec->SizeOfRawData, sec->Misc.VirtualSize );
+    SIZE_T align = nt->OptionalHeader.SectionAlignment;
+
+    if (align > 1) size = (size + align - 1) & ~(align - 1);
+    return size;
+}
+
+
 static NTSTATUS perform_relocations( void *module, IMAGE_NT_HEADERS *nt, SIZE_T len )
 {
     char *base;
@@ -2216,9 +2235,12 @@ static NTSTATUS perform_relocations( void *module, IMAGE_NT_HEADERS *nt, SIZE_T 
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
     {
         void *addr = get_rva( module, sec[i].VirtualAddress );
-        SIZE_T size = sec[i].SizeOfRawData;
-        NtProtectVirtualMemory( NtCurrentProcess(), &addr,
-                                &size, PAGE_READWRITE, &protect_old[i] );
+        SIZE_T size = get_section_span( nt, &sec[i] );
+
+        /* a protection that could not be changed is not restored either */
+        if (NtProtectVirtualMemory( NtCurrentProcess(), &addr,
+                                    &size, PAGE_READWRITE, &protect_old[i] ))
+            protect_old[i] = 0;
     }
 
     TRACE( "relocating from %p-%p to %p-%p\n",
@@ -2249,7 +2271,9 @@ static NTSTATUS perform_relocations( void *module, IMAGE_NT_HEADERS *nt, SIZE_T 
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
     {
         void *addr = get_rva( module, sec[i].VirtualAddress );
-        SIZE_T size = sec[i].SizeOfRawData;
+        SIZE_T size = get_section_span( nt, &sec[i] );
+
+        if (!protect_old[i]) continue;
         NtProtectVirtualMemory( NtCurrentProcess(), &addr,
                                 &size, protect_old[i], &protect_old[i] );
     }
