@@ -724,6 +724,510 @@ static void set_shared_data_version(void)
 }
 
 
+/* The hardware keys that wineboot writes at every boot, from the SMBIOS table that ntdll makes
+ * (create_hardware_registry_keys in programs/wineboot/wineboot.c). The keys under
+ * HKLM\Hardware are volatile, so a template prefix never holds them, and programs read them:
+ * FEX takes the host's processor from CentralProcessor\0 and ends the process without it. */
+
+#define RSMB (('R' << 24) | ('S' << 16) | ('M' << 8) | 'B')
+
+#pragma pack(push,1)
+
+struct smbios_prologue
+{
+    BYTE  calling_method;
+    BYTE  major_version;
+    BYTE  minor_version;
+    BYTE  revision;
+    DWORD length;
+};
+
+enum smbios_type
+{
+    SMBIOS_TYPE_BIOS = 0,
+    SMBIOS_TYPE_SYSTEM = 1,
+    SMBIOS_TYPE_BASEBOARD = 2,
+    SMBIOS_TYPE_PROCESSOR = 4,
+    SMBIOS_TYPE_PROCESSOR_ADDITIONAL_INFO = 44,
+};
+
+struct smbios_header
+{
+    BYTE type;
+    BYTE length;
+    WORD handle;
+};
+
+struct smbios_baseboard
+{
+    struct smbios_header hdr;
+    BYTE                 vendor;
+    BYTE                 product;
+    BYTE                 version;
+    BYTE                 serial;
+};
+
+struct smbios_bios
+{
+    struct smbios_header hdr;
+    BYTE                 vendor;
+    BYTE                 version;
+    WORD                 start;
+    BYTE                 date;
+    BYTE                 size;
+    UINT64               characteristics;
+    BYTE                 characteristics_ext[2];
+    BYTE                 system_bios_major_release;
+    BYTE                 system_bios_minor_release;
+    BYTE                 ec_firmware_major_release;
+    BYTE                 ec_firmware_minor_release;
+};
+
+struct smbios_system
+{
+    struct smbios_header hdr;
+    BYTE                 vendor;
+    BYTE                 product;
+    BYTE                 version;
+    BYTE                 serial;
+    BYTE                 uuid[16];
+    BYTE                 wake_up_type;
+    BYTE                 sku;
+    BYTE                 family;
+};
+
+struct smbios_processor
+{
+    struct smbios_header hdr;
+    BYTE                 socket;
+    BYTE                 type;
+    BYTE                 family;
+    BYTE                 vendor;
+    ULONGLONG            id;
+    BYTE                 version;
+    BYTE                 voltage;
+    WORD                 clock;
+    WORD                 max_speed;
+    WORD                 cur_speed;
+    BYTE                 status;
+    BYTE                 upgrade;
+    WORD                 l1cache;
+    WORD                 l2cache;
+    WORD                 l3cache;
+    BYTE                 serial;
+    BYTE                 asset_tag;
+    BYTE                 part_number;
+    BYTE                 core_count;
+    BYTE                 core_enabled;
+    BYTE                 thread_count;
+    WORD                 characteristics;
+    WORD                 family2;
+    WORD                 core_count2;
+    WORD                 core_enabled2;
+    WORD                 thread_count2;
+};
+
+struct smbios_processor_specific_block
+{
+    BYTE length;
+    BYTE processor_type;
+    BYTE data[];
+};
+
+struct smbios_processor_additional_info
+{
+    struct smbios_header hdr;
+    WORD ref_handle;
+    struct smbios_processor_specific_block info_block;
+};
+
+struct smbios_wine_core_id_regs_arm64
+{
+    WORD num_regs;
+    struct smbios_wine_id_reg_value_arm64
+    {
+        WORD reg;
+        UINT64 value;
+    } regs[];
+};
+
+#pragma pack(pop)
+
+
+/***********************************************************************
+ *           get_smbios_table
+ *
+ * The SMBIOS table with its prologue, as GetSystemFirmwareTable returns it, or NULL.
+ */
+static char *get_smbios_table( UINT *len )
+{
+    SYSTEM_FIRMWARE_TABLE_INFORMATION *info;
+    ULONG size = sizeof(*info), needed = 0;
+    NTSTATUS status;
+    char *ret;
+
+    for (;;)
+    {
+        if (!(info = calloc( 1, size ))) return NULL;
+        info->ProviderSignature = RSMB;
+        info->Action = SystemFirmwareTable_Get;
+        info->TableID = 0;
+        info->TableBufferLength = size - FIELD_OFFSET( SYSTEM_FIRMWARE_TABLE_INFORMATION, TableBuffer );
+        status = NtQuerySystemInformation( SystemFirmwareTableInformation, info, size, &needed );
+        if (status != STATUS_BUFFER_TOO_SMALL || needed <= size) break;
+        free( info );
+        size = needed;
+    }
+    if (status || !(ret = malloc( info->TableBufferLength )))
+    {
+        free( info );
+        return NULL;
+    }
+    memcpy( ret, info->TableBuffer, info->TableBufferLength );
+    *len = info->TableBufferLength;
+    free( info );
+    return ret;
+}
+
+
+/***********************************************************************
+ *           find_smbios_entry
+ */
+static const struct smbios_header *find_smbios_entry( enum smbios_type type, unsigned int index,
+                                                      const char *buf, UINT len )
+{
+    const char *ptr, *start;
+    const struct smbios_prologue *prologue;
+    const struct smbios_header *hdr;
+
+    if (len < sizeof(struct smbios_prologue)) return NULL;
+    prologue = (const struct smbios_prologue *)buf;
+    if (prologue->length > len - sizeof(*prologue) || prologue->length < sizeof(*hdr)) return NULL;
+
+    start = (const char *)(prologue + 1);
+    hdr = (const struct smbios_header *)start;
+
+    for (;;)
+    {
+        if ((const char *)hdr - start >= prologue->length - sizeof(*hdr)) return NULL;
+        if (!hdr->length) return NULL;
+
+        if (hdr->type == type)
+        {
+            if ((const char *)hdr - start + hdr->length > prologue->length) return NULL;
+            if (!index--) return hdr;
+        }
+        /* skip other entries and their strings */
+        for (ptr = (const char *)hdr + hdr->length; ptr - buf < len && *ptr; ptr++)
+        {
+            for (; ptr - buf < len; ptr++) if (!*ptr) break;
+        }
+        if (ptr == (const char *)hdr + hdr->length) ptr++;
+        hdr = (const struct smbios_header *)(ptr + 1);
+    }
+}
+
+
+/***********************************************************************
+ *           get_smbios_string
+ *
+ * The string with this number of the entry whose strings start at offset, or NULL.
+ */
+static const char *get_smbios_string( BYTE id, const char *buf, UINT offset, UINT buflen )
+{
+    const char *ptr;
+    UINT i = 0;
+
+    if (!id || offset >= buflen) return NULL;
+    for (ptr = buf + offset; ptr - buf < buflen && *ptr; ptr++)
+    {
+        if (++i == id) return ptr;
+        for (; ptr - buf < buflen; ptr++) if (!*ptr) break;
+    }
+    return NULL;
+}
+
+
+/***********************************************************************
+ *           create_key
+ *
+ * Creates a key below root, or an absolute one for a root of 0; volatile unless told otherwise.
+ */
+static HANDLE create_key( HANDLE root, const char *nameA, BOOL is_volatile )
+{
+    WCHAR nameW[256];
+    UNICODE_STRING name;
+    OBJECT_ATTRIBUTES attr;
+    HANDLE key;
+
+    ascii_to_unicode( nameW, nameA, strlen( nameA ) + 1 );
+    init_unicode_string( &name, nameW );
+    InitializeObjectAttributes( &attr, &name, OBJ_CASE_INSENSITIVE, root, NULL );
+    if (NtCreateKey( &key, KEY_ALL_ACCESS, &attr, 0, NULL,
+                     is_volatile ? REG_OPTION_VOLATILE : 0, NULL ))
+        return 0;
+    return key;
+}
+
+
+static void set_value( HANDLE key, const char *nameA, ULONG type, const void *data, ULONG size )
+{
+    WCHAR nameW[64];
+    UNICODE_STRING name;
+
+    ascii_to_unicode( nameW, nameA, strlen( nameA ) + 1 );
+    init_unicode_string( &name, nameW );
+    NtSetValueKey( key, &name, 0, type, data, size );
+}
+
+
+static void set_string_value( HANDLE key, const char *name, const char *value )
+{
+    WCHAR valueW[256];
+    DWORD len = min( strlen( value ), ARRAY_SIZE(valueW) - 1 );
+
+    len = ntdll_umbstowcs( value, len, valueW, ARRAY_SIZE(valueW) - 1 );
+    valueW[len] = 0;
+    set_value( key, name, REG_SZ, valueW, (len + 1) * sizeof(WCHAR) );
+}
+
+
+static void set_dword_value( HANDLE key, const char *name, DWORD value )
+{
+    set_value( key, name, REG_DWORD, &value, sizeof(value) );
+}
+
+
+static void set_smbios_string( HANDLE key, const char *name, BYTE id, const char *buf, UINT offset,
+                               UINT len )
+{
+    const char *str = get_smbios_string( id, buf, offset, len );
+
+    set_string_value( key, name, str ? str : "" );
+}
+
+
+/***********************************************************************
+ *           create_bios_values
+ */
+static void create_bios_values( HANDLE bios_key, const char *buf, UINT len )
+{
+    const struct smbios_header *hdr;
+    UINT offset;
+
+    if ((hdr = find_smbios_entry( SMBIOS_TYPE_BASEBOARD, 0, buf, len )))
+    {
+        const struct smbios_baseboard *baseboard = (const struct smbios_baseboard *)hdr;
+
+        offset = (const char *)baseboard - buf + baseboard->hdr.length;
+        set_smbios_string( bios_key, "BaseBoardManufacturer", baseboard->vendor, buf, offset, len );
+        set_smbios_string( bios_key, "BaseBoardProduct", baseboard->product, buf, offset, len );
+        set_smbios_string( bios_key, "BaseBoardVersion", baseboard->version, buf, offset, len );
+    }
+    if ((hdr = find_smbios_entry( SMBIOS_TYPE_BIOS, 0, buf, len )))
+    {
+        const struct smbios_bios *bios = (const struct smbios_bios *)hdr;
+        BOOL releases = bios->hdr.length >= 0x18;
+
+        offset = (const char *)bios - buf + bios->hdr.length;
+        set_smbios_string( bios_key, "BIOSVendor", bios->vendor, buf, offset, len );
+        set_smbios_string( bios_key, "BIOSVersion", bios->version, buf, offset, len );
+        set_smbios_string( bios_key, "BIOSReleaseDate", bios->date, buf, offset, len );
+        set_dword_value( bios_key, "BiosMajorRelease", releases ? bios->system_bios_major_release : 0xff );
+        set_dword_value( bios_key, "BiosMinorRelease", releases ? bios->system_bios_minor_release : 0xff );
+        set_dword_value( bios_key, "ECFirmwareMajorVersion", releases ? bios->ec_firmware_major_release : 0xff );
+        set_dword_value( bios_key, "ECFirmwareMinorVersion", releases ? bios->ec_firmware_minor_release : 0xff );
+    }
+    if ((hdr = find_smbios_entry( SMBIOS_TYPE_SYSTEM, 0, buf, len )))
+    {
+        const struct smbios_system *system = (const struct smbios_system *)hdr;
+        BOOL sku = system->hdr.length >= 0x1b;
+
+        offset = (const char *)system - buf + system->hdr.length;
+        set_smbios_string( bios_key, "SystemManufacturer", system->vendor, buf, offset, len );
+        set_smbios_string( bios_key, "SystemProductName", system->product, buf, offset, len );
+        set_smbios_string( bios_key, "SystemVersion", system->version, buf, offset, len );
+        set_smbios_string( bios_key, "SystemSKU", sku ? system->sku : 0, buf, offset, len );
+        set_smbios_string( bios_key, "SystemFamily", sku ? system->family : 0, buf, offset, len );
+    }
+}
+
+
+#ifdef __aarch64__
+
+/***********************************************************************
+ *           create_id_reg_values_arm64
+ *
+ * The ARM64 ID registers of a core as "CP xxxx" values, where the host's table holds them.
+ */
+static void create_id_reg_values_arm64( HANDLE core_key, UINT core, const char *buf, UINT len )
+{
+    const struct smbios_header *hdr;
+    const struct smbios_processor_additional_info *additional_info;
+    const struct smbios_wine_core_id_regs_arm64 *core_id_regs;
+    char name[9];
+    UINT i;
+
+    if (!(hdr = find_smbios_entry( SMBIOS_TYPE_PROCESSOR_ADDITIONAL_INFO, core, buf, len ))) return;
+
+    additional_info = (const struct smbios_processor_additional_info *)hdr;
+    core_id_regs = (const struct smbios_wine_core_id_regs_arm64 *)additional_info->info_block.data;
+    for (i = 0; i < core_id_regs->num_regs; i++)
+    {
+        snprintf( name, sizeof(name), "CP %04X", core_id_regs->regs[i].reg );
+        set_value( core_key, name, REG_QWORD, &core_id_regs->regs[i].value, sizeof(UINT64) );
+    }
+}
+
+#endif
+
+
+/***********************************************************************
+ *           create_processor_values
+ */
+static void create_processor_values( HANDLE system_key, const char *buf, UINT len )
+{
+    const struct smbios_header *hdr;
+    const struct smbios_processor *proc;
+    unsigned int pkg, core, offset, i, thread_count;
+    HANDLE key, cpu_key, fpu_key = 0, env_key;
+    SYSTEM_BASIC_INFORMATION sbi;
+    SYSTEM_CPU_INFORMATION sci;
+    PROCESSOR_POWER_INFORMATION *power_info = NULL;
+    const char *arch, *version, *vendorid;
+    char id[60], buffer[128];
+    ULONG count = 1;
+
+    if (NtQuerySystemInformation( SystemCpuInformation, &sci, sizeof(sci), NULL )) return;
+    if (!NtQuerySystemInformation( SystemBasicInformation, &sbi, sizeof(sbi), NULL ) &&
+        sbi.NumberOfProcessors > 0)
+        count = sbi.NumberOfProcessors;
+    if (!(power_info = calloc( count, sizeof(*power_info) ))) return;
+    if (NtPowerInformation( ProcessorInformation, NULL, 0, power_info, count * sizeof(*power_info) ))
+        memset( power_info, 0, count * sizeof(*power_info) );
+
+    switch (sci.ProcessorArchitecture)
+    {
+    case PROCESSOR_ARCHITECTURE_ARM:
+    case PROCESSOR_ARCHITECTURE_ARM64:
+        set_string_value( system_key, "Identifier", "ARM processor family" );
+        break;
+    default:
+        set_string_value( system_key, "Identifier", "AT compatible" );
+        fpu_key = create_key( system_key, "FloatingPointProcessor", TRUE );
+        break;
+    }
+    set_string_value( system_key, "SystemBiosDate", "01/01/70" );
+
+    cpu_key = create_key( system_key, "CentralProcessor", TRUE );
+
+    for (pkg = core = 0; ; pkg++)
+    {
+        if (!(hdr = find_smbios_entry( SMBIOS_TYPE_PROCESSOR, pkg, buf, len ))) break;
+        if (hdr->length < 0x28) break; /* version 2.5 is required */
+        proc = (const struct smbios_processor *)hdr;
+        offset = (const char *)proc - buf + proc->hdr.length;
+        version = get_smbios_string( proc->version, buf, offset, len );
+        vendorid = get_smbios_string( proc->vendor, buf, offset, len );
+
+        switch (sci.ProcessorArchitecture)
+        {
+        case PROCESSOR_ARCHITECTURE_ARM:
+            arch = "ARM";
+            snprintf( id, sizeof(id), "ARM Family 7 Model %X Revision %X",
+                      sci.ProcessorLevel, sci.ProcessorRevision );
+            break;
+        case PROCESSOR_ARCHITECTURE_ARM64:
+            arch = "ARM64";
+            snprintf( id, sizeof(id), "ARMv8 (64-bit) Family 8 Model %X Revision %X",
+                      sci.ProcessorLevel, sci.ProcessorRevision );
+            break;
+        case PROCESSOR_ARCHITECTURE_AMD64:
+            arch = "AMD64";
+            snprintf( id, sizeof(id), "%s Family %u Model %u Stepping %u",
+                      vendorid && !strcmp( vendorid, "AuthenticAMD" ) ? "AMD64" : "Intel64",
+                      sci.ProcessorLevel, HIBYTE(sci.ProcessorRevision), LOBYTE(sci.ProcessorRevision) );
+            break;
+        default:
+            arch = "x86";
+            snprintf( id, sizeof(id), "x86 Family %u Model %u Stepping %u",
+                      sci.ProcessorLevel, HIBYTE(sci.ProcessorRevision), LOBYTE(sci.ProcessorRevision) );
+            break;
+        }
+
+        thread_count = (proc->hdr.length >= 0x30) ? proc->thread_count2 : proc->thread_count;
+        for (i = 0; i < thread_count; i++, core++)
+        {
+            snprintf( buffer, sizeof(buffer), "%u", core );
+            if (cpu_key && (key = create_key( cpu_key, buffer, TRUE )))
+            {
+                /* wineboot reads the TSC's frequency on x86 only */
+                DWORD mhz = core < count ? power_info[core].MaxMhz : 0;
+
+                set_dword_value( key, "FeatureSet", sci.ProcessorFeatureBits );
+                set_string_value( key, "Identifier", id );
+                if (vendorid) set_string_value( key, "VendorIdentifier", vendorid );
+                if (version) set_string_value( key, "ProcessorNameString", version );
+                set_dword_value( key, "~MHz", mhz );
+#ifdef __aarch64__
+                create_id_reg_values_arm64( key, core, buf, len );
+#endif
+                NtClose( key );
+            }
+            if (fpu_key && (key = create_key( fpu_key, buffer, TRUE )))
+            {
+                set_string_value( key, "Identifier", id );
+                NtClose( key );
+            }
+        }
+
+        /* the environment's values are saved, but they follow the host as wineboot keeps them */
+        if (!pkg && (env_key = create_key( 0, "\\Registry\\Machine\\System\\CurrentControlSet\\"
+                                              "Control\\Session Manager\\Environment", FALSE )))
+        {
+            set_string_value( env_key, "PROCESSOR_ARCHITECTURE", arch );
+            snprintf( buffer, sizeof(buffer), "%s, %s", id, vendorid ? vendorid : "Unknown" );
+            set_string_value( env_key, "PROCESSOR_IDENTIFIER", buffer );
+            snprintf( buffer, sizeof(buffer), "%u", sci.ProcessorLevel );
+            set_string_value( env_key, "PROCESSOR_LEVEL", buffer );
+            snprintf( buffer, sizeof(buffer), "%04x", sci.ProcessorRevision );
+            set_string_value( env_key, "PROCESSOR_REVISION", buffer );
+            snprintf( buffer, sizeof(buffer), "%u", (unsigned int)count );
+            set_string_value( env_key, "NUMBER_OF_PROCESSORS", buffer );
+            NtClose( env_key );
+        }
+    }
+
+    if (fpu_key) NtClose( fpu_key );
+    if (cpu_key) NtClose( cpu_key );
+    free( power_info );
+}
+
+
+/***********************************************************************
+ *           create_hardware_keys
+ */
+static void create_hardware_keys(void)
+{
+    HANDLE system_key, bios_key;
+    UINT len = 0;
+    char *buf;
+
+    if (!(buf = get_smbios_table( &len ))) return;
+    if ((system_key = create_key( 0, "\\Registry\\Machine\\Hardware\\Description\\System", TRUE )))
+    {
+        if ((bios_key = create_key( system_key, "BIOS", TRUE )))
+        {
+            create_bios_values( bios_key, buf, len );
+            NtClose( bios_key );
+        }
+        create_processor_values( system_key, buf, len );
+        NtClose( system_key );
+    }
+    free( buf );
+}
+
+
 /***********************************************************************
  *           paneport_boot
  *
@@ -743,6 +1247,7 @@ void paneport_boot(void)
     set_shared_data_version();
     create_drive_links();
     create_volatile_environment();
+    create_hardware_keys();
 
     /* a later process that runs run_wineboot finds the boot done */
     ascii_to_unicode( eventW, eventA, ARRAY_SIZE(eventA) );
