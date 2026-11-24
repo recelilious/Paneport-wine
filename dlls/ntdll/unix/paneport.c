@@ -949,23 +949,62 @@ static const char *get_smbios_string( BYTE id, const char *buf, UINT offset, UIN
 
 
 /***********************************************************************
- *           create_key
- *
- * Creates a key below root, or an absolute one for a root of 0; volatile unless told otherwise.
+ *           create_one_key
  */
-static HANDLE create_key( HANDLE root, const char *nameA, BOOL is_volatile )
+static HANDLE create_one_key( HANDLE root, const char *nameA, ULONG options )
 {
     WCHAR nameW[256];
     UNICODE_STRING name;
     OBJECT_ATTRIBUTES attr;
     HANDLE key;
 
+    if (strlen( nameA ) >= ARRAY_SIZE(nameW)) return 0;
     ascii_to_unicode( nameW, nameA, strlen( nameA ) + 1 );
     init_unicode_string( &name, nameW );
     InitializeObjectAttributes( &attr, &name, OBJ_CASE_INSENSITIVE, root, NULL );
-    if (NtCreateKey( &key, KEY_ALL_ACCESS, &attr, 0, NULL,
-                     is_volatile ? REG_OPTION_VOLATILE : 0, NULL ))
-        return 0;
+    if (NtCreateKey( &key, KEY_ALL_ACCESS, &attr, 0, NULL, options, NULL )) return 0;
+    return key;
+}
+
+
+/***********************************************************************
+ *           create_key
+ *
+ * Creates or opens a key below root, or below HKLM for a root of 0. The server makes only the
+ * last level of a path, so a path whose parents are missing is made one level at a time, as
+ * RegCreateKeyExW does; each level that this makes is volatile unless told otherwise.
+ */
+static HANDLE create_key( HANDLE root, const char *path, BOOL is_volatile )
+{
+    ULONG options = is_volatile ? REG_OPTION_VOLATILE : 0;
+    HANDLE machine = 0, key, parent;
+    const char *start = path, *end;
+    char part[64];
+    size_t len;
+
+    if (!root && !(root = machine = create_one_key( 0, "\\Registry\\Machine", 0 ))) return 0;
+
+    if (!(key = create_one_key( root, path, options )))
+    {
+        parent = root;
+        for (;;)
+        {
+            end = strchr( start, '\\' );
+            len = end ? (size_t)(end - start) : strlen( start );
+            key = 0;
+            if (len < sizeof(part))
+            {
+                memcpy( part, start, len );
+                part[len] = 0;
+                key = create_one_key( parent, part, options );
+            }
+            if (parent != root) NtClose( parent );
+            if (!key || !end) break;
+            parent = key;
+            start = end + 1;
+        }
+    }
+    if (machine) NtClose( machine );
     return key;
 }
 
@@ -1182,8 +1221,8 @@ static void create_processor_values( HANDLE system_key, const char *buf, UINT le
         }
 
         /* the environment's values are saved, but they follow the host as wineboot keeps them */
-        if (!pkg && (env_key = create_key( 0, "\\Registry\\Machine\\System\\CurrentControlSet\\"
-                                              "Control\\Session Manager\\Environment", FALSE )))
+        if (!pkg && (env_key = create_key( 0, "System\\CurrentControlSet\\Control\\"
+                                              "Session Manager\\Environment", FALSE )))
         {
             set_string_value( env_key, "PROCESSOR_ARCHITECTURE", arch );
             snprintf( buffer, sizeof(buffer), "%s, %s", id, vendorid ? vendorid : "Unknown" );
@@ -1214,7 +1253,7 @@ static void create_hardware_keys(void)
     char *buf;
 
     if (!(buf = get_smbios_table( &len ))) return;
-    if ((system_key = create_key( 0, "\\Registry\\Machine\\Hardware\\Description\\System", TRUE )))
+    if ((system_key = create_key( 0, "Hardware\\Description\\System", TRUE )))
     {
         if ((bios_key = create_key( system_key, "BIOS", TRUE )))
         {
