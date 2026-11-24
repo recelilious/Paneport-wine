@@ -116,11 +116,19 @@ static void paneport_log( int level, const char *format, ... )
  *           paneport_fatal
  *
  * Ends the app after a failure that the session cannot survive, since single-process mode
- * never calls exit: the host's dispatcher writes the crash record.
+ * never calls exit: the host's dispatcher writes the crash record. The text also goes to
+ * standard error, as upstream's fatal errors do, because the abort may come before the host
+ * delivers its log line. The thread stops being a guest thread first, so that the dispatcher
+ * does not hand the abort to Wine's own handler, which would make it an exception of the guest.
  */
 void paneport_fatal( const char *text )
 {
-    if (bridge) bridge->log( PP_WINE_LOG_ERROR, text );
+    fprintf( stderr, "wine: %s\n", text );
+    if (bridge)
+    {
+        bridge->log( PP_WINE_LOG_ERROR, text );
+        bridge->unmark_thread();
+    }
     abort();
 }
 
