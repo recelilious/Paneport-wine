@@ -227,7 +227,9 @@ void paneport_end_server(void)
     quit_main_loop();
 }
 
-/* hand a fatal error to the host's log and abort, instead of exiting */
+/* hand a fatal error to standard error and the host's log and abort, instead of exiting; it goes
+ * to standard error first, as ntdll's do, since the abort may come before the host delivers the
+ * line that it logged */
 void paneport_fatal_error( const char *err, va_list args )
 {
     char text[1024];
@@ -238,8 +240,8 @@ void paneport_fatal_error( const char *err, va_list args )
     vsnprintf( text + len, sizeof(text) - len, err, args );
     len = strlen( text );
     if (len && text[len - 1] == '\n') text[len - 1] = 0;
+    fprintf( stderr, "%s\n", text );
     if (server_args.log) server_args.log( 3, text );
-    else fprintf( stderr, "%s\n", text );
     abort();
 }
 
