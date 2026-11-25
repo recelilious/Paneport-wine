@@ -554,13 +554,15 @@ WCHAR *paneport_initial_directory(void)
     const char *end;
     WCHAR *ret;
     size_t len;
+    DWORD count;
 
     if (!program_path || !(end = strrchr( program_path, '\\' ))) return NULL;
     len = end - program_path + 1;
     if (!(ret = malloc( (len + 5) * sizeof(WCHAR) ))) return NULL;
     ascii_to_unicode( ret, "\\??\\", 4 );
-    ntdll_umbstowcs( program_path, len, ret + 4, len );
-    ret[len + 4] = 0;
+    /* a character of more than one byte gives one WCHAR, or two, but never more than its bytes */
+    count = ntdll_umbstowcs( program_path, len, ret + 4, len );
+    ret[count + 4] = 0;
     return ret;
 }
 
