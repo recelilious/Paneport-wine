@@ -2,6 +2,12 @@
  * Wine's single-process mode for Paneport
  *
  * Copyright 2026 recelilious and the Paneport contributors
+ * Copyright (C) 2002 Andreas Mohr
+ * Copyright (C) 2002 Shachar Shemesh
+ *
+ * The SMBIOS structures and find_smbios_entry come from programs/wineboot/wineboot.c, and the
+ * hardware keys of the boot step are adapted from it: the two copyright lines above are that
+ * file's.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -91,7 +97,9 @@ static char *program_path;               /* its program, as a Windows path */
 /* The drive letter that the launch maps to the program's folder. */
 #define PANEPORT_PROGRAM_DRIVE 'd'
 
-/* The stack size of a process's first thread, which Wine uses as its kernel stack. */
+/* The stack size of a process's first thread. The stack carries only the process's start-up
+ * code: signal_start_thread then switches to the kernel stack in the thread's data. 8 MiB, the
+ * size of a main thread's stack, gives that code the room that it has upstream on Linux. */
 #define PANEPORT_FIRST_STACK_SIZE (8 * 1024 * 1024)
 
 

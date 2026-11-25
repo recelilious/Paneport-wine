@@ -95,9 +95,9 @@ struct wine_paneport_process_state
 };
 
 /*
- * Starts the session on the host's main thread: keeps the bridge, prepares the prefix, has the
- * host create the wineserver's thread through the bridge, and returns once the server accepts
- * its first client. It runs once per process.
+ * Starts the session on the host's main thread: keeps the bridge, prepares the prefix, sets the
+ * wineserver up, and returns once the host created the server's thread through the bridge. The
+ * server takes its first client when a launch connects. It runs once per process.
  */
 typedef int32_t (*wine_paneport_session_start_t)( const pp_wine_bridge_t *bridge,
                                                   const struct wine_paneport_session *session );
@@ -111,8 +111,8 @@ typedef int32_t (*wine_paneport_session_stop_t)( void );
 
 /*
  * Launches a program as the session's process on a thread of its own, on any thread of the
- * host. It duplicates the descriptors that it keeps, and returns once the process's thread
- * runs; the bridge's process_started or process_exited follows.
+ * host. It duplicates the descriptors that it keeps, and returns once the process's thread is
+ * created; the bridge's process_started or process_exited follows.
  */
 typedef int32_t (*wine_paneport_process_launch_t)( const struct wine_paneport_launch *launch );
 
