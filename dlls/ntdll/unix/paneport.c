@@ -83,6 +83,8 @@ static wine_paneport_server_terminate_t server_lib_terminate;
 
 static uint64_t process_handle;          /* the host's handle of the session's process */
 static unsigned int process_id;          /* its Windows id, once it started */
+static LONG process_state;               /* its WINE_PANEPORT_PROCESS_ state, or 0 */
+static DWORD process_exit_code;          /* its exit code, once it ended */
 static int std_fds[3] = { -1, -1, -1 };  /* its standard handles until they are wrapped */
 static char *program_path;               /* its program, as a Windows path */
 
@@ -209,6 +211,8 @@ static void server_log( int level, const char *text )
 static void server_process_ended( unsigned int id, unsigned int exit_code )
 {
     if (!process_launched || (process_id && id != process_id)) return;
+    process_exit_code = exit_code;
+    InterlockedExchange( &process_state, WINE_PANEPORT_PROCESS_EXITED );
     bridge->process_exited( process_handle, exit_code );
 }
 
@@ -576,6 +580,7 @@ WCHAR *paneport_initial_directory(void)
 void paneport_process_started(void)
 {
     process_id = HandleToULong( NtCurrentTeb()->ClientId.UniqueProcess );
+    InterlockedCompareExchange( &process_state, WINE_PANEPORT_PROCESS_RUNNING, WINE_PANEPORT_PROCESS_STARTING );
     bridge->process_started( process_handle );
 }
 
@@ -1532,6 +1537,8 @@ DECLSPEC_EXPORT int32_t __wine_paneport_process_launch( const struct wine_panepo
         return PP_WINE_E_SYSTEM;
     }
     paneport_server_socket = sockets[0];
+    /* the server reports the process's end from now on; a stop may already have reported it */
+    InterlockedCompareExchange( &process_state, WINE_PANEPORT_PROCESS_STARTING, 0 );
 
     pthread_attr_init( &attr );
     pthread_attr_setstacksize( &attr, PANEPORT_FIRST_STACK_SIZE );
@@ -1555,4 +1562,23 @@ DECLSPEC_EXPORT int32_t __wine_paneport_process_terminate( uint64_t process, uin
     if (!server_lib_terminate || !process_launched || process != process_handle)
         return PP_WINE_E_INVALID_ARGUMENT;
     return server_lib_terminate( process_id, exit_code ) ? PP_WINE_E_SYSTEM : PP_WINE_OK;
+}
+
+
+/***********************************************************************
+ *           __wine_paneport_process_query
+ *
+ * Reads the state that the reports of the bridge set, without a lock, since the host may hold
+ * one of its own: process_handle is set before the state, and the exit code before _EXITED.
+ */
+DECLSPEC_EXPORT int32_t __wine_paneport_process_query( uint64_t process,
+                                                       struct wine_paneport_process_state *state )
+{
+    LONG current = InterlockedCompareExchange( &process_state, 0, 0 );
+
+    if (!state || state->struct_size < sizeof(*state)) return PP_WINE_E_INVALID_ARGUMENT;
+    if (!current || process != process_handle) return PP_WINE_E_INVALID_ARGUMENT;
+    state->state = current;
+    state->exit_code = current == WINE_PANEPORT_PROCESS_EXITED ? process_exit_code : 0;
+    return PP_WINE_OK;
 }

@@ -43,8 +43,8 @@
 extern "C" {
 #endif
 
-/* The version of these declarations. */
-#define WINE_PANEPORT_ENTRY_VERSION 1
+/* The version of these declarations: 2 added the query of a process. */
+#define WINE_PANEPORT_ENTRY_VERSION 2
 
 /* The architecture of a session's programs. */
 #define WINE_PANEPORT_ARCH_X86_64 1
@@ -79,6 +79,20 @@ struct wine_paneport_launch
 #define WINE_PANEPORT_SESSION_STOP      "__wine_paneport_session_stop"
 #define WINE_PANEPORT_PROCESS_LAUNCH    "__wine_paneport_process_launch"
 #define WINE_PANEPORT_PROCESS_TERMINATE "__wine_paneport_process_terminate"
+#define WINE_PANEPORT_PROCESS_QUERY     "__wine_paneport_process_query"
+
+/* The states of a process that a query reports. */
+#define WINE_PANEPORT_PROCESS_STARTING 1  /* the server knows it; its start is not reported yet */
+#define WINE_PANEPORT_PROCESS_RUNNING  2  /* the bridge's process_started reported its start */
+#define WINE_PANEPORT_PROCESS_EXITED   3  /* the bridge's process_exited reported its end */
+
+/* What a query reports of a process. */
+struct wine_paneport_process_state
+{
+    uint32_t    struct_size;    /* sizeof(struct wine_paneport_process_state) */
+    uint32_t    state;          /* WINE_PANEPORT_PROCESS_STARTING, _RUNNING or _EXITED */
+    uint32_t    exit_code;      /* its exit code once the state is _EXITED, else 0 */
+};
 
 /*
  * Starts the session on the host's main thread: keeps the bridge, prepares the prefix, has the
@@ -107,6 +121,15 @@ typedef int32_t (*wine_paneport_process_launch_t)( const struct wine_paneport_la
  * TerminateProcess does, and returns once the termination is under way.
  */
 typedef int32_t (*wine_paneport_process_terminate_t)( uint64_t process, uint32_t exit_code );
+
+/*
+ * Queries a process of the session, on any thread of the host: whether the bridge has reported
+ * its start and its end, and its exit code once it ended. It takes no lock, so the host may call
+ * it while it holds one of its own. It returns PP_WINE_E_INVALID_ARGUMENT for a process that the
+ * server does not know, such as one whose launch failed before it reached the server.
+ */
+typedef int32_t (*wine_paneport_process_query_t)( uint64_t process,
+                                                  struct wine_paneport_process_state *state );
 
 #ifdef __cplusplus
 }
