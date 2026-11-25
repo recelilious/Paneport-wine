@@ -3,6 +3,7 @@
  *
  * Copyright 1997, 2002, 2020 Alexandre Julliard
  * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and maps ARM64EC code with MAP_JIT on Apple silicon.
+ * Changed for Paneport on 2026-11-25: in single-process mode, ends the app through the host instead of exiting when the shared user data or the ARM64EC code map cannot be mapped.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -2497,6 +2498,7 @@ static void alloc_arm64ec_map(void)
     if (status)
     {
         ERR( "failed to allocate ARM64EC map: %08x\n", status );
+        if (paneport_mode) paneport_fatal( "the ARM64EC code map could not be allocated" );
         exit(1);
     }
     if (peb) peb->EcCodeBitMap = arm64ec_view->base;
@@ -3812,6 +3814,7 @@ struct thread_data *virtual_alloc_first_thread_data(void)
     if (status)
     {
         ERR( "wine: failed to map the shared user data: %08x\n", status );
+        if (paneport_mode) paneport_fatal( "the shared user data could not be mapped" );
         exit(1);
     }
 #if defined(__APPLE__) && defined(__aarch64__)
@@ -4280,12 +4283,14 @@ void virtual_map_user_shared_data(void)
     if ((status = NtOpenSection( &section, SECTION_ALL_ACCESS, &attr )))
     {
         ERR( "failed to open the USD section: %08x\n", status );
+        if (paneport_mode) paneport_fatal( "the section of the shared user data could not be opened" );
         exit(1);
     }
     if ((res = server_get_unix_fd( section, 0, &fd, &needs_close, NULL, NULL )) ||
         (user_shared_data != mmap( user_shared_data, page_size, PROT_READ, MAP_SHARED|MAP_FIXED, fd, 0 )))
     {
         ERR( "failed to remap the process USD: %d\n", res );
+        if (paneport_mode) paneport_fatal( "the shared user data could not be mapped again" );
         exit(1);
     }
     if (needs_close) close( fd );
@@ -4311,12 +4316,14 @@ void virtual_init_user_shared_data(void)
     if ((status = NtOpenSection( &section, SECTION_ALL_ACCESS, &attr )))
     {
         ERR( "failed to open the USD section: %08x\n", status );
+        if (paneport_mode) paneport_fatal( "the section of the shared user data could not be opened" );
         exit(1);
     }
     if ((res = server_get_unix_fd( section, 0, &fd, &needs_close, NULL, NULL )) ||
         (data = mmap( NULL, sizeof(*data), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0 )) == MAP_FAILED)
     {
         ERR( "failed to remap the process USD: %d\n", res );
+        if (paneport_mode) paneport_fatal( "the shared user data could not be mapped for writing" );
         exit(1);
     }
     if (needs_close) close( fd );

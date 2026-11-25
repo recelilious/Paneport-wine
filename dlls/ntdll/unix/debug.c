@@ -2,6 +2,7 @@
  * Debugging functions
  *
  * Copyright 2000 Alexandre Julliard
+ * Changed for Paneport on 2026-11-25: in single-process mode, ends the app through the host instead of exiting after the help of WINEDEBUG.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -187,6 +188,7 @@ static void debug_usage(void)
         "    turns on relay traces, disable heap warnings\n"
         "Available message classes: err, warn, fixme, trace\n";
     write( 2, usage, sizeof(usage) - 1 );
+    if (paneport_mode) paneport_fatal( "WINEDEBUG asked for its help" );
     exit(1);
 }
 

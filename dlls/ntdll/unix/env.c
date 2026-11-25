@@ -3,7 +3,7 @@
  *
  * Copyright 1996, 1998 Alexandre Julliard
  * Copyright 2003       Eric Pouech
- * Changed for Paneport on 2026-11-23 and 2026-11-24: in single-process mode, takes the standard handles from the launch, starts in the program's folder, runs the boot step in the process instead of wineboot, and runs a program not at its base instead of starting it through start.exe.
+ * Changed for Paneport on 2026-11-23, 2026-11-24 and 2026-11-25: in single-process mode, takes the standard handles from the launch, starts in the program's folder, runs the boot step in the process instead of wineboot, runs a program not at its base instead of starting it through start.exe, and ends the app through the host instead of exiting after the help of WINEDLLOVERRIDES.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -892,6 +892,7 @@ static WCHAR *get_initial_environment( SIZE_T *pos, SIZE_T *size )
             else if (!strcmp( str, "WINEDLLOVERRIDES=help" ))
             {
                 MESSAGE( overrides_help_message );
+                if (paneport_mode) paneport_fatal( "WINEDLLOVERRIDES asked for its help" );
                 exit(0);
             }
         }
