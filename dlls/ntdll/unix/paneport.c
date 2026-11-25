@@ -1540,12 +1540,17 @@ DECLSPEC_EXPORT int32_t __wine_paneport_process_launch( const struct wine_panepo
     /* the server reports the process's end from now on; a stop may already have reported it */
     InterlockedCompareExchange( &process_state, WINE_PANEPORT_PROCESS_STARTING, 0 );
 
+    /* nothing joins the thread: it ends through pthread_exit when the process ends */
     pthread_attr_init( &attr );
     pthread_attr_setstacksize( &attr, PANEPORT_FIRST_STACK_SIZE );
-    pthread_attr_setdetachstate( &attr, PTHREAD_CREATE_JOINABLE );
+    pthread_attr_setdetachstate( &attr, PTHREAD_CREATE_DETACHED );
     if (pthread_create( &thread, &attr, process_main, argv ))
     {
         pthread_attr_destroy( &attr );
+        /* the host waits for its pipes to close, and the server for the client to hang up */
+        paneport_server_socket = -1;
+        close( sockets[0] );
+        paneport_close_std_fds();
         paneport_log( PP_WINE_LOG_ERROR, "the process's thread could not be created" );
         return PP_WINE_E_SYSTEM;
     }
