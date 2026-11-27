@@ -3,7 +3,7 @@ dnl Original author: Michael Patra
 dnl For detailed change history, see the git commit logs.
 dnl Changed for Paneport on 2026-11-15, 2026-11-16 and 2026-11-22: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, links the macOS loader so that macOS 27 starts it and keeps x18, and uses the dynamic shared user data in ARM64EC code too.
 dnl Changed for Paneport on 2026-11-23: links and installs the wineserver.so library of single-process mode.
-dnl Changed for Paneport on 2026-11-27: links the macOS loader with the SDK that builds it, since nothing takes the TEB from x18 any more.
+dnl Changed for Paneport on 2026-11-27: links the macOS loader with the SDK that builds it, since nothing takes the TEB from x18 any more, and builds the thread-local variables of ARM64 and ARM64EC PE code with emulated TLS.
 
 m4_define(WINE_VERSION,regexp(m4_include(VERSION),[version \([-.0-9A-Za-z]+\)],[\1]))
 
@@ -709,6 +709,18 @@ Please install mingw-w64, clang/llvm-dlltool/lld, or llvm-mingw.])
           aarch64|arm64ec) AS_VAR_APPEND([${wine_arch}_EXTRACFLAGS],[" -DHAVE_DYNAMIC_USER_SHARED_DATA"]) ;;
         esac
     fi
+
+    dnl The kernel of Apple systems zeroes x18, where the code that a compiler
+    dnl emits for a thread-local variable of a Windows ARM64 target finds the
+    dnl TLS array. That is the one use of x18 that NtCurrentTeb cannot replace,
+    dnl so such variables use emulated TLS there: compiler-rt's
+    dnl __emutls_get_address, which keeps them in a TLS slot. The guards of
+    dnl static initializers in C++ code read one, _Init_thread_epoch.
+    case $host_cpu-$host_os-$wine_arch in
+      aarch64-*darwin*-aarch64|aarch64-*darwin*-arm64ec)
+        AS_VAR_APPEND([${wine_arch}_EXTRACFLAGS],[" -femulated-tls"])
+        AS_VAR_APPEND([${wine_arch}_EXTRACXXFLAGS],[" -femulated-tls"]) ;;
+    esac
 
 done
 

@@ -13,7 +13,7 @@
 # gives unlimited permission to copy, distribute and modify it.
 # Changed for Paneport on 2026-11-15, 2026-11-16 and 2026-11-22: carries the hunks of Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, links the macOS loader so that macOS 27 starts it and keeps x18, and uses the dynamic shared user data in ARM64EC code too; edited by hand, not regenerated.
 # Changed for Paneport on 2026-11-23: links and installs the wineserver.so library of single-process mode; edited by hand, not regenerated.
-# Changed for Paneport on 2026-11-27: links the macOS loader with the SDK that builds it, since nothing takes the TEB from x18 any more; edited by hand, not regenerated.
+# Changed for Paneport on 2026-11-27: links the macOS loader with the SDK that builds it, since nothing takes the TEB from x18 any more, and builds the thread-local variables of ARM64 and ARM64EC PE code with emulated TLS; edited by hand, not regenerated.
 ## -------------------- ##
 ## M4sh Initialization. ##
 ## -------------------- ##
@@ -10528,6 +10528,12 @@ fi }
           aarch64|arm64ec) as_fn_append ${wine_arch}_EXTRACFLAGS " -DHAVE_DYNAMIC_USER_SHARED_DATA" ;;
         esac
     fi
+
+                    case $host_cpu-$host_os-$wine_arch in
+      aarch64-*darwin*-aarch64|aarch64-*darwin*-arm64ec)
+        as_fn_append ${wine_arch}_EXTRACFLAGS " -femulated-tls"
+        as_fn_append ${wine_arch}_EXTRACXXFLAGS " -femulated-tls" ;;
+    esac
 
 done
 
