@@ -3,6 +3,7 @@
  *
  * Copyright 2010-2013 André Hentschel
  * Changed for Paneport on 2026-11-15 and 2026-11-16: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, without its use of TPIDR_EL0.
+ * Changed for Paneport on 2026-11-27: takes the TEB from the thread's TSD instead of x18.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -364,7 +365,8 @@ __ASM_GLOBAL_FUNC( KiUserCallbackDispatcher,
                    ".seh_handler user_callback_handler, @except\n\t"
                    "ldr x0, [sp]\n\t"             /* args */
                    "ldp w1, w2, [sp, #0x08]\n\t"  /* len, id */
-                   "ldr x3, [x18, 0x60]\n\t"      /* peb */
+                   __ASM_TSD_TEB("x3")
+                   "ldr x3, [x3, 0x60]\n\t"       /* peb */
                    "ldr x3, [x3, 0x58]\n\t"       /* peb->KernelCallbackTable */
                    "ldr x15, [x3, x2, lsl #3]\n\t"
                    "blr x15\n\t"
@@ -765,7 +767,8 @@ __ASM_GLOBAL_FUNC( RtlRaiseException,
                    "ldr w2, [x1]\n\t"            /* context->ContextFlags */
                    "orr w2, w2, #0x20000000\n\t" /* CONTEXT_UNWOUND_TO_CALL */
                    "str w2, [x1]\n\t"
-                   "ldr x3, [x18, #0x60]\n\t"    /* peb */
+                   __ASM_TSD_TEB("x3")
+                   "ldr x3, [x3, #0x60]\n\t"     /* peb */
                    "ldrb w2, [x3, #2]\n\t"       /* peb->BeingDebugged */
                    "cbnz w2, 1f\n\t"
                    "bl dispatch_exception\n"
@@ -869,7 +872,8 @@ __ASM_GLOBAL_FUNC( DbgUiRemoteBreakin,
                    ".seh_save_fplr_x 16\n\t"
                    ".seh_endprologue\n\t"
                    ".seh_handler DbgUiRemoteBreakin_handler, @except\n\t"
-                   "ldr x0, [x18, #0x60]\n\t"       /* NtCurrentTeb()->Peb */
+                   __ASM_TSD_TEB("x0")
+                   "ldr x0, [x0, #0x60]\n\t"        /* NtCurrentTeb()->Peb */
                    "ldrb w0, [x0, 0x02]\n\t"        /* peb->BeingDebugged */
                    "cbz w0, 1f\n\t"
                    "bl DbgBreakPoint\n"

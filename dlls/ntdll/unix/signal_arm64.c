@@ -4,6 +4,7 @@
  * Copyright 2010-2013 André Hentschel
  * Changed for Paneport on 2026-11-15, 2026-11-16 and 2026-11-22: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, takes the TEB from x18 again instead of TPIDR_EL0, and keeps Wine 11.20's prologues of the syscall and Unix call dispatchers, without the request's global variables.
  * Changed for Paneport on 2026-11-23: in single-process mode, takes faults from the host's signal dispatcher and delivers thread control through SIGUSR2.
+ * Changed for Paneport on 2026-11-27: keeps the TEB in the thread's TSD and takes it from there instead of x18, and checks the TSD's layout.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -68,6 +69,15 @@ WINE_DEFAULT_DEBUG_CHANNEL(seh);
 
 #define NTDLL_DWARF_H_NO_UNWINDER
 #include "dwarf.h"
+
+#ifndef __APPLE__
+#error "This fork keeps the TEB pointer in the TSD of Apple systems, see set_tsd_teb."
+#endif
+
+/* slots of a thread's TSD on Apple systems (XNU, libsyscall/os/tsd.h) */
+#define TSD_SLOT_PTHREAD_SELF 0  /* the thread itself, what pthread_self returns */
+#define TSD_SLOT_TEB          6  /* reserved for Windows emulation; offset 0x30, as in
+                                  * NtCurrentTeb and __ASM_TSD_TEB */
 
 struct arm64_thread_data
 {
@@ -914,33 +924,30 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
                    "stp d12, d13, [x29, #0x80]\n\t"
                    "stp d14, d15, [x29, #0x90]\n\t"
                    "stp x1, x2, [x29, #0xa0]\n\t" /* ret_ptr, ret_len */
-                   "mov x18, x4\n\t"              /* teb */
                    "mrs x1, fpcr\n\t"
                    "mrs x2, fpsr\n\t"
                    "bfi x1, x2, #0, #32\n\t"
-                   "ldr x2, [x18]\n\t"            /* teb->Tib.ExceptionList */
+                   "ldr x2, [x4]\n\t"             /* teb->Tib.ExceptionList */
                    "stp x1, x2, [x29, #0xb0]\n\t"
 
-                   "ldr x7, [x18, #0x378]\n\t"    /* thread_data->syscall_frame */
+                   "ldr x7, [x4, #0x378]\n\t"     /* thread_data->syscall_frame */
                    "sub x1, sp, #0x330\n\t"       /* sizeof(struct syscall_frame) */
-                   "str x1, [x18, #0x378]\n\t"    /* thread_data->syscall_frame */
+                   "str x1, [x4, #0x378]\n\t"     /* thread_data->syscall_frame */
                    "add x8, x29, #0xd0\n\t"
                    "stp x7, x8, [x1, #0x110]\n\t" /* frame->prev_frame,syscall_cfa */
-                   "ldr w11, [x18, #0x380]\n\t"   /* thread_data->syscall_trace */
+                   "ldr w11, [x4, #0x380]\n\t"    /* thread_data->syscall_trace */
                    "cbnz x11, 2f\n\t"
                    /* switch to user stack */
                    "1:mov sp, x0\n\t"             /* user_sp */
                    __ASM_LOCAL_LABEL("call_user_mode_callback_user_stack") ":\n\t"
                    "br x3\n"
-                   "2:\tmov x19, x18\n\t"         /* teb */
-                   "mov x20, x0\n\t"              /* user_sp */
+                   "2:\tmov x20, x0\n\t"          /* user_sp */
                    "mov x21, x3\n\t"              /* func */
                    "mov sp, x1\n\t"
                    "ldr x1, [x20]\n\t"            /* args */
                    "ldp w2, w0, [x20, #8]\n\t"    /* len, id */
                    "str x0, [x29, #0xc0]\n\t"     /* id */
                    "bl " __ASM_NAME("trace_usercall") "\n\t"
-                   "mov x18, x19\n\t"             /* teb */
                    "mov x0, x20\n\t"              /* user_sp */
                    "mov x3, x21\n\t"
                    "b 1b" )
@@ -1780,6 +1787,61 @@ void syscall_dispatcher_return_slowpath(void)
 }
 
 /***********************************************************************
+ *           get_tsd
+ *
+ * The calling thread's TSD, the array of pointers that libpthread keeps for each thread.
+ * TPIDRRO_EL0 holds its address on Apple systems; the low three bits are cleared, because
+ * the kernel has kept the CPU number there.
+ */
+static inline void **get_tsd(void)
+{
+    ULONG_PTR tsd;
+
+    __asm__( "mrs %0, tpidrro_el0" : "=r" (tsd) );
+    return (void **)(tsd & ~(ULONG_PTR)7);
+}
+
+
+/***********************************************************************
+ *           signal_check_tsd
+ *
+ * Whether the calling thread's TSD is laid out as the TEB pointer needs: slot 0 holds the
+ * thread itself, as libpthread documents it, and slot 6, which Apple reserves for Windows
+ * emulation, holds nothing or what the caller expects. A system that keeps something else
+ * there, or that no longer gives user mode the TSD's address, must not run PE code, whose
+ * every TEB access would read that slot.
+ */
+BOOL signal_check_tsd( void *expected )
+{
+    void **tsd = get_tsd();
+
+    return tsd && tsd[TSD_SLOT_PTHREAD_SELF] == (void *)pthread_self() &&
+           (!tsd[TSD_SLOT_TEB] || tsd[TSD_SLOT_TEB] == expected);
+}
+
+
+/***********************************************************************
+ *           set_tsd_teb
+ *
+ * Stores the TEB pointer where NtCurrentTeb and __ASM_TSD_TEB read it. Every thread calls
+ * this before it runs PE code for the first time.
+ */
+static void set_tsd_teb( TEB *teb )
+{
+    static const char message[] = "the thread's TSD cannot hold the TEB pointer "
+                                  "(TPIDRRO_EL0, or TSD slot 0 or 6, is not as expected)";
+
+    if (!signal_check_tsd( teb ))
+    {
+        if (paneport_mode) paneport_fatal( message );
+        fprintf( stderr, "wine: %s\n", message );
+        exit(1);
+    }
+    get_tsd()[TSD_SLOT_TEB] = teb;
+}
+
+
+/***********************************************************************
  *           init_syscall_frame
  */
 void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, TEB *teb )
@@ -1789,6 +1851,8 @@ void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, TEB *teb )
     CONTEXT *ctx, context = { CONTEXT_ALL };
     I386_CONTEXT *i386_context;
     ARM_CONTEXT *arm_context;
+
+    set_tsd_teb( teb );
 
     context.X0  = (DWORD64)entry;
     context.X1  = (DWORD64)arg;
@@ -1890,7 +1954,8 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
  */
 __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    "hint 34\n\t" /* bti c */
-                   "ldr x10, [x18, #0x378]\n\t" /* thread_data->syscall_frame */
+                   __ASM_TSD_TEB("x10")
+                   "ldr x10, [x10, #0x378]\n\t" /* thread_data->syscall_frame */
                    "stp x18, x19, [x10, #0x90]\n\t"
                    "stp x20, x21, [x10, #0xa0]\n\t"
                    "stp x22, x23, [x10, #0xb0]\n\t"
@@ -1943,9 +2008,8 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    __ASM_CFI_CFA_IS_AT2(x22, 0x98, 0x02) /* frame->syscall_cfa */
                    "and x20, x8, #0xfff\n\t"    /* syscall number */
                    "ubfx x21, x8, #12, #2\n\t"  /* syscall table number */
-                   /* x18 still holds the caller's TEB: macOS keeps x18 for the loader, which is
-                    * linked as built against the macOS 12 SDK, while it overwrites TPIDR_EL0 */
-                   "ldr x16, [x18, #0x370]\n\t" /* thread_data->syscall_table */
+                   __ASM_TSD_TEB("x16")
+                   "ldr x16, [x16, #0x370]\n\t" /* thread_data->syscall_table */
                    "add x21, x16, x21, lsl #5\n\t"
                    "ldr x16, [x21, #16]\n\t"    /* table->ServiceLimit */
                    "cmp x20, x16\n\t"
@@ -1963,7 +2027,8 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    "cbnz x9, 1b\n"
                    "2:\tldr x16, [x21]\n\t"     /* table->ServiceTable */
                    "ldr x23, [x16, x20, lsl 3]\n\t"
-                   "ldr w11, [x18, #0x380]\n\t" /* thread_data->syscall_trace */
+                   __ASM_TSD_TEB("x11")
+                   "ldr w11, [x11, #0x380]\n\t" /* thread_data->syscall_trace */
                    "cbnz x11, " __ASM_LOCAL_LABEL("trace_syscall") "\n\t"
                    "blr x23\n\t"
                    "mov sp, x22\n"
@@ -2053,7 +2118,8 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    "b " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") )
 
 __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher_return,
-                   "ldr w11, [x18, #0x380]\n\t" /* thread_data->syscall_trace */
+                   __ASM_TSD_TEB("x11")
+                   "ldr w11, [x11, #0x380]\n\t" /* thread_data->syscall_trace */
                    "cbnz x11, " __ASM_LOCAL_LABEL("trace_syscall_ret") "\n\t"
                    "b " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") )
 
@@ -2063,7 +2129,8 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher_return,
  */
 __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                    "hint 34\n\t" /* bti c */
-                   "ldr x10, [x18, #0x378]\n\t" /* thread_data->syscall_frame */
+                   __ASM_TSD_TEB("x10")
+                   "ldr x10, [x10, #0x378]\n\t" /* thread_data->syscall_frame */
                    "stp x18, x19, [x10, #0x90]\n\t"
                    "stp x20, x21, [x10, #0xa0]\n\t"
                    "stp x22, x23, [x10, #0xb0]\n\t"

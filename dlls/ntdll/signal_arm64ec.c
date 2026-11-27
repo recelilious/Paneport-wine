@@ -2,6 +2,7 @@
  * ARM64EC signal handling routines
  *
  * Copyright 1999, 2005, 2023 Alexandre Julliard
+ * Changed for Paneport on 2026-11-27: takes the TEB from the thread's TSD instead of x18.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -1373,7 +1374,8 @@ __ASM_GLOBAL_FUNC( "#KiUserCallbackDispatcher",
                    ".seh_handler user_callback_handler, @except\n\t"
                    "ldr x0, [sp]\n\t"             /* args */
                    "ldp w1, w2, [sp, #0x08]\n\t"  /* len, id */
-                   "ldr x3, [x18, 0x60]\n\t"      /* peb */
+                   __ASM_TSD_TEB("x3")
+                   "ldr x3, [x3, 0x60]\n\t"       /* peb */
                    "ldr x3, [x3, 0x58]\n\t"       /* peb->KernelCallbackTable */
                    "ldr x15, [x3, x2, lsl #3]\n\t"
                    "blr x15\n\t"
@@ -1899,7 +1901,8 @@ static void __attribute__((naked)) arm64x_check_call(void)
     asm( ".seh_proc \"#arm64x_check_call\"\n\t"
          ".seh_endprologue\n\t"
          /* check for EC code */
-         "ldr x16, [x18, #0x60]\n\t"        /* peb */
+         __ASM_TSD_TEB("x16")
+         "ldr x16, [x16, #0x60]\n\t"        /* peb */
          "lsr x17, x11, #18\n\t"            /* dest / page_size / 64 */
          "ldr x16, [x16, #0x368]\n\t"       /* peb->EcCodeBitMap */
          "lsr x9, x11, #12\n\t"             /* dest / page_size */
@@ -2059,7 +2062,8 @@ void __attribute((naked)) RtlRaiseException( EXCEPTION_RECORD *rec )
          "add x1, sp, #0x20\n\t"       /* context pointer */
          "ldr x2, [x1, #0xf8]\n\t"     /* ctx->Rip */
          "str x2, [x0, #0x10]\n\t"     /* rec->ExceptionAddress */
-         "ldr x3, [x18, #0x60]\n\t"    /* peb */
+         __ASM_TSD_TEB("x3")
+         "ldr x3, [x3, #0x60]\n\t"     /* peb */
          "ldrb w2, [x3, #2]\n\t"       /* peb->BeingDebugged */
          "cbnz w2, 1f\n\t"
          "bl \"#dispatch_exception\"\n"
@@ -2163,7 +2167,8 @@ void __attribute__((naked)) DbgUiRemoteBreakin( void *arg )
          ".seh_save_fplr_x 16\n\t"
          ".seh_endprologue\n\t"
          ".seh_handler DbgUiRemoteBreakin_handler, @except\n\t"
-         "ldr x0, [x18, #0x60]\n\t"  /* NtCurrentTeb()->Peb */
+         __ASM_TSD_TEB("x0")
+         "ldr x0, [x0, #0x60]\n\t"   /* NtCurrentTeb()->Peb */
          "ldrb w0, [x0, 0x02]\n\t"   /* peb->BeingDebugged */
          "cbz w0, 1f\n\t"
          "bl \"#DbgBreakPoint\"\n"

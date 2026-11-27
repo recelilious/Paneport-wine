@@ -4,6 +4,7 @@
  * Copyright (C) 2020 Alexandre Julliard
  * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and adds __wine_jit_write_protect.
  * Changed for Paneport on 2026-11-23: declares single-process mode, and gives a thread's data a record for its thread control.
+ * Changed for Paneport on 2026-11-27: declares signal_check_tsd.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -399,6 +400,9 @@ extern void DECLSPEC_NORETURN signal_start_thread( PRTL_THREAD_START_ROUTINE ent
 extern SYSTEM_SERVICE_TABLE KeServiceDescriptorTable[4];
 extern void __wine_syscall_dispatcher(void);
 extern void __wine_syscall_dispatcher_return(void);
+#ifdef __aarch64__
+extern BOOL signal_check_tsd( void *expected );
+#endif
 extern void __wine_unix_call_dispatcher(void);
 extern NTSTATUS signal_set_full_context( CONTEXT *context );
 extern NTSTATUS get_thread_wow64_context( HANDLE handle, void *ctx, ULONG size );

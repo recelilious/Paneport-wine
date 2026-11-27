@@ -2,6 +2,7 @@
  * Inline assembly support
  *
  * Copyright 2019 Alexandre Julliard
+ * Changed for Paneport on 2026-11-27: adds __ASM_TSD_TEB, which loads the TEB from the thread's TSD on Apple systems.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -20,6 +21,17 @@
 
 #ifndef __WINE_WINE_ASM_H
 #define __WINE_WINE_ASM_H
+
+/* Paneport: loads the calling thread's TEB into the register reg and clobbers nothing else,
+ * as NtCurrentTeb in winnt.h does: slot 6 (offset 0x30) of the thread's TSD, whose address
+ * TPIDRRO_EL0 holds on Apple systems. Neither side of Wine takes the TEB from x18, which
+ * the kernel zeroes. */
+#if defined(__aarch64__) || defined(__arm64ec__)
+# define __ASM_TSD_TEB(reg) \
+    "mrs " reg ", tpidrro_el0\n\t" \
+    "and " reg ", " reg ", #0xfffffffffffffff8\n\t" \
+    "ldr " reg ", [" reg ", #0x30]\n\t"
+#endif
 
 #if defined(__APPLE__) || (defined(__WINE_PE_BUILD) && defined(__i386__))
 # define __ASM_NAME(name) "_" name

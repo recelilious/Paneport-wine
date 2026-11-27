@@ -1386,6 +1386,38 @@ static char **make_argv( const char *program, const char *arguments )
 }
 
 
+#ifdef __aarch64__
+
+/***********************************************************************
+ *           check_tsd_thread
+ */
+static void *check_tsd_thread( void *arg )
+{
+    return signal_check_tsd( NULL ) ? arg : NULL;
+}
+
+
+/***********************************************************************
+ *           check_tsd
+ *
+ * Whether a new thread's TSD can hold the TEB pointer: PE code takes the TEB from TSD slot 6
+ * through TPIDRRO_EL0, since the kernel zeroes x18 (NtCurrentTeb in winnt.h). Neither is a
+ * documented interface of the system, so a session checks both on a thread of its own before
+ * any PE code runs: the slot must be empty there, and slot 0 must hold the thread.
+ */
+static BOOL check_tsd(void)
+{
+    pthread_t thread;
+    void *ret = NULL;
+
+    if (pthread_create( &thread, NULL, check_tsd_thread, &thread )) return FALSE;
+    if (pthread_join( thread, &ret )) return FALSE;
+    return ret != NULL;
+}
+
+#endif  /* __aarch64__ */
+
+
 /***********************************************************************
  *           __wine_paneport_session_start
  */
@@ -1417,6 +1449,15 @@ DECLSPEC_EXPORT int32_t __wine_paneport_session_start( const pp_wine_bridge_t *h
     bridge = host_bridge;
     paneport_mode = TRUE;
     pthread_mutex_unlock( &paneport_mutex );
+
+#ifdef __aarch64__
+    if (!check_tsd())
+    {
+        paneport_log( PP_WINE_LOG_ERROR, "a new thread's TSD cannot hold the TEB pointer "
+                      "(TPIDRRO_EL0, or TSD slot 0 or 6, is not as expected)" );
+        return PP_WINE_E_SYSTEM;
+    }
+#endif
 
     if (!apply_environment( session->environment ) || setenv( "WINEPREFIX", session->prefix_folder, 1 ))
     {
