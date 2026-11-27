@@ -1,10 +1,10 @@
+# Changed for Paneport on 2026-11-27: leaves out libavutil's crc.S for aarch64 and arm64ec, which is under the GPL.
 STATICLIB = libffmpeg.a
 EXTRADEFS = $(FFMPEG_PE_CFLAGS) -DHAVE_AV_CONFIG_H
 
 SOURCES = \
 	config.h \
 	libavutil/aarch64/cpu.c \
-	libavutil/aarch64/crc.S \
 	libavutil/aarch64/float_dsp_init.c \
 	libavutil/aarch64/float_dsp_neon.S \
 	libavutil/aarch64/tx_float_init.c \
@@ -20,7 +20,6 @@ SOURCES = \
 	libavutil/arm/float_dsp_neon.S \
 	libavutil/arm/float_dsp_vfp.S \
 	libavutil/arm64ec/cpu.c \
-	libavutil/arm64ec/crc.S \
 	libavutil/audio_fifo.c \
 	libavutil/avsscanf.c \
 	libavutil/avstring.c \
