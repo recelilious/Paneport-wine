@@ -2720,7 +2720,7 @@ static FORCEINLINE struct _TEB * WINAPI NtCurrentTeb(void)
 {
     return (struct _TEB *)__readfsdword( 0x18 );
 }
-#elif (defined(__aarch64__) || defined(__arm64ec__)) && defined(__GNUC__)
+#elif (defined(__aarch64__) || defined(__arm64ec__)) && (defined(__GNUC__) || defined(__clang__))
 /* Paneport: this fork runs only on Apple systems, whose kernel zeroes x18 on every return to
  * user mode in an iOS app, and in a macOS program linked with the macOS 13 SDK or a later
  * one. The TEB pointer therefore lives in slot 6 of the thread's TSD, which Apple's
@@ -2728,7 +2728,9 @@ static FORCEINLINE struct _TEB * WINAPI NtCurrentTeb(void)
  * the TSD's address: user mode can read it and only the kernel writes it. Its low three bits
  * are cleared, because the kernel has kept the CPU number there. The Unix side sets the slot
  * before a thread runs PE code (set_tsd_teb in dlls/ntdll/unix/signal_arm64.c), and
- * __ASM_TSD_TEB in wine/asm.h is the same sequence for assembly code. */
+ * __ASM_TSD_TEB in wine/asm.h is the same sequence for assembly code. The branch also takes
+ * clang when it targets the MSVC ABI, as it does for Wine's PE side, where it defines
+ * _MSC_VER and not __GNUC__ and would otherwise read x18 through __getReg below. */
 static FORCEINLINE struct _TEB * WINAPI NtCurrentTeb(void)
 {
     ULONG_PTR tsd;
