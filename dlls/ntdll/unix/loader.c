@@ -4,6 +4,7 @@
  * Copyright (C) 2020 Alexandre Julliard
  * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and adds __wine_jit_write_protect.
  * Changed for Paneport on 2026-11-23: starts a process on a thread of the host in single-process mode, where a fatal error goes to the host's log.
+ * Changed for Paneport on 2026-11-28: adds the Unix calls of __wine_jit_get_write_address and __wine_jit_get_code_limit.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -1046,6 +1047,8 @@ static const unixlib_entry_t unix_call_funcs[] =
     unixcall_register_teb_ptr,
     unixcall_get_current_teb,
     unixcall_jit_write_protect,
+    unixcall_jit_get_write_address,
+    unixcall_jit_get_code_limit,
 };
 
 

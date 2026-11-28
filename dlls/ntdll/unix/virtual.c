@@ -4,6 +4,7 @@
  * Copyright 1997, 2002, 2020 Alexandre Julliard
  * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and maps ARM64EC code with MAP_JIT on Apple silicon.
  * Changed for Paneport on 2026-11-25: in single-process mode, ends the app through the host instead of exiting when the shared user data or the ARM64EC code map cannot be mapped.
+ * Changed for Paneport on 2026-11-28: serves ARM64EC code from the host's JIT code pool, gives no other memory execute permission but the images of the native machine, and adds the Unix calls of __wine_jit_get_write_address and __wine_jit_get_code_limit.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -136,7 +137,8 @@ struct file_view
 #define VPROT_SYSTEM           0x0200  /* system view (underlying mmap not under our control) */
 #define VPROT_PLACEHOLDER      0x0400
 #define VPROT_FREE_PLACEHOLDER 0x0800
-#define VPROT_JIT              0x1000  /* view mapped with MAP_JIT (Apple silicon) */
+#define VPROT_JIT              0x1000  /* view mapped with MAP_JIT (Apple silicon), or taken from the JIT code pool */
+#define VPROT_NATIVE_IMAGE     0x2000  /* image whose code the host runs itself (ARM64, ARM64EC, ARM64X) */
 
 /* Conversion from VPROT_* to Win32 flags */
 static const BYTE VIRTUAL_Win32Flags[16] =
@@ -1392,6 +1394,241 @@ static void virtual_release_address_space(void)
 
 
 /***********************************************************************
+ * The JIT code pool of Paneport's host.
+ *
+ * On iOS an app cannot make memory executable. A debugger prepares a fixed set of regions
+ * before the session starts, and the host maps each of them twice: readable and executable at
+ * one address, readable and writable at another. No page is ever writable and executable at
+ * once, and neither view can be given the other's permission. The host lists the regions
+ * through the bridge's get_jit_pool, and the allocator below hands their memory out: to the
+ * translator, whose requests for ARM64EC code map_jit_view serves from it, and later to the
+ * code of PE images, for which the last region is kept.
+ *
+ * A view of pool memory lies at the execute address and carries VPROT_JIT. Its protections are
+ * bookkeeping only: nothing here calls mmap, munmap or mprotect on pool memory. Whoever writes
+ * code asks __wine_jit_get_write_address for the alias of a range and writes there. With a
+ * pool, nothing outside it is given PROT_EXEC but the images of the native machine.
+ *
+ * The pool is cut into granules of the allocation granularity, each with a state byte. A freed
+ * range keeps its contents until it is handed out again, and is cleared through the alias
+ * then, so memory that was never used stays untouched. virtual_mutex guards the state bytes.
+ */
+
+#define JIT_POOL_MAX_REGIONS   16
+#define JIT_POOL_GRANULE_SHIFT 16
+#define JIT_POOL_GRANULE_SIZE  ((size_t)1 << JIT_POOL_GRANULE_SHIFT)
+
+#define JIT_GRANULE_USED   0x01  /* part of a view */
+#define JIT_GRANULE_DIRTY  0x02  /* was part of a view before: cleared when handed out again */
+
+struct jit_pool_region
+{
+    char   *exec;      /* first granule of the executable view */
+    char   *write;     /* the same memory in the writable alias */
+    size_t  granules;  /* number of granules */
+    BYTE   *state;     /* JIT_GRANULE_ flags of each granule */
+};
+
+static struct jit_pool_region jit_pool[JIT_POOL_MAX_REGIONS];
+static unsigned int jit_pool_count;          /* number of regions; 0 without a pool */
+static unsigned int jit_pool_code_regions;   /* the first regions, which serve generated code;
+                                              * the rest is kept for the code of PE images */
+static struct wine_jit_pool_stats jit_pool_stats;
+
+
+/***********************************************************************
+ *           virtual_set_jit_pool
+ *
+ * Take over the regions of the host's JIT code pool, once, before the session's first process
+ * starts. Returns FALSE when a region cannot be used; the session must not start then.
+ */
+BOOL virtual_set_jit_pool( const struct wine_jit_pool_region *regions, unsigned int count )
+{
+    unsigned int i;
+
+    if (jit_pool_count || count > JIT_POOL_MAX_REGIONS) return FALSE;
+    for (i = 0; i < count; i++)
+    {
+        /* granules start on multiples of the allocation granularity of the execute address */
+        UINT_PTR start = ((UINT_PTR)regions[i].exec + JIT_POOL_GRANULE_SIZE - 1) & ~(JIT_POOL_GRANULE_SIZE - 1);
+        UINT_PTR end = ((UINT_PTR)regions[i].exec + regions[i].size) & ~(JIT_POOL_GRANULE_SIZE - 1);
+        void *state;
+
+        if (!regions[i].exec || !regions[i].write || end <= start) return FALSE;
+        if (end > (UINT_PTR)user_space_limit) return FALSE;
+        jit_pool[i].granules = (end - start) >> JIT_POOL_GRANULE_SHIFT;
+        state = mmap( NULL, jit_pool[i].granules, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0 );
+        if (state == MAP_FAILED) return FALSE;
+        jit_pool[i].state = state;
+        jit_pool[i].exec  = (char *)start;
+        jit_pool[i].write = (char *)regions[i].write + (start - (UINT_PTR)regions[i].exec);
+        jit_pool_stats.pool_bytes += end - start;
+    }
+    /* the last region is kept for images, unless it is the only one */
+    jit_pool_code_regions = count > 1 ? count - 1 : count;
+    for (i = 0; i < jit_pool_code_regions; i++)
+        jit_pool_stats.code_limit += jit_pool[i].granules << JIT_POOL_GRANULE_SHIFT;
+    jit_pool_stats.regions = count;
+    jit_pool_count = count;
+    return TRUE;
+}
+
+
+/***********************************************************************
+ *           virtual_get_jit_pool_stats
+ *
+ * Copy the pool's counters, without a lock: the caller may run where virtual_mutex must not be
+ * taken, and the numbers are diagnostics.
+ */
+void virtual_get_jit_pool_stats( struct wine_jit_pool_stats *stats )
+{
+    *stats = jit_pool_stats;
+}
+
+
+/***********************************************************************
+ *           find_jit_pool_region
+ *
+ * Find the region whose executable view holds a range, or NULL.
+ */
+static struct jit_pool_region *find_jit_pool_region( const void *addr, size_t size )
+{
+    unsigned int i;
+
+    for (i = 0; i < jit_pool_count; i++)
+    {
+        size_t region_size = jit_pool[i].granules << JIT_POOL_GRANULE_SHIFT;
+
+        if ((const char *)addr < jit_pool[i].exec) continue;
+        if ((size_t)((const char *)addr - jit_pool[i].exec) >= region_size) continue;
+        if (size > region_size - ((const char *)addr - jit_pool[i].exec)) return NULL;
+        return &jit_pool[i];
+    }
+    return NULL;
+}
+
+
+/***********************************************************************
+ *           is_jit_pool_address
+ */
+static inline BOOL is_jit_pool_address( const void *addr )
+{
+    return jit_pool_count && find_jit_pool_region( addr, 0 );
+}
+
+
+/***********************************************************************
+ *           jit_pool_write_address
+ *
+ * The address of a range of the pool in the writable alias, or NULL when the range is not
+ * inside one region.
+ */
+static void *jit_pool_write_address( const void *addr, size_t size )
+{
+    struct jit_pool_region *region = find_jit_pool_region( addr, size );
+
+    if (!region) return NULL;
+    return region->write + ((const char *)addr - region->exec);
+}
+
+
+/***********************************************************************
+ *           jit_pool_alloc
+ *
+ * Take a range out of the regions that serve generated code, and return its execute address,
+ * or NULL when no region has room. The range reads as zeroes.
+ * virtual_mutex must be held by caller.
+ */
+static void *jit_pool_alloc( size_t size, size_t align_mask )
+{
+    size_t count = (size + JIT_POOL_GRANULE_SIZE - 1) >> JIT_POOL_GRANULE_SHIFT;
+    unsigned int pass, r;
+    size_t i, j;
+
+    if (!count) return NULL;
+    /* memory that was never handed out first, so that reuse does not touch more pages */
+    for (pass = 0; pass < 2; pass++)
+    {
+        BYTE busy = pass ? JIT_GRANULE_USED : JIT_GRANULE_USED | JIT_GRANULE_DIRTY;
+
+        for (r = 0; r < jit_pool_code_regions; r++)
+        {
+            struct jit_pool_region *region = &jit_pool[r];
+
+            for (i = 0; i + count <= region->granules; i++)
+            {
+                char *ptr = region->exec + (i << JIT_POOL_GRANULE_SHIFT);
+
+                if ((UINT_PTR)ptr & align_mask) continue;
+                for (j = 0; j < count; j++) if (region->state[i + j] & busy) break;
+                if (j < count)
+                {
+                    i += j;
+                    continue;
+                }
+                if (mem_area_state( find_mem_area( ptr )) != AREA_FREE)
+                {
+                    ERR( "the JIT code pool at %p lies in an area that Wine reserved\n", ptr );
+                    return NULL;
+                }
+                for (j = 0; j < count; j++)
+                {
+                    if (region->state[i + j] & JIT_GRANULE_DIRTY)
+                        memset( region->write + ((i + j) << JIT_POOL_GRANULE_SHIFT), 0, JIT_POOL_GRANULE_SIZE );
+                    region->state[i + j] = JIT_GRANULE_USED | JIT_GRANULE_DIRTY;
+                }
+                jit_pool_stats.allocations++;
+                jit_pool_stats.code_bytes += count << JIT_POOL_GRANULE_SHIFT;
+                if (jit_pool_stats.code_bytes > jit_pool_stats.code_peak_bytes)
+                    jit_pool_stats.code_peak_bytes = jit_pool_stats.code_bytes;
+                return ptr;
+            }
+        }
+    }
+    jit_pool_stats.refusals++;
+    return NULL;
+}
+
+
+/***********************************************************************
+ *           jit_pool_free
+ *
+ * Give a range that jit_pool_alloc returned back to the pool.
+ * virtual_mutex must be held by caller.
+ */
+static void jit_pool_free( void *addr, size_t size )
+{
+    struct jit_pool_region *region = find_jit_pool_region( addr, size );
+    size_t count = (size + JIT_POOL_GRANULE_SIZE - 1) >> JIT_POOL_GRANULE_SHIFT;
+    size_t i, first;
+
+    if (!region) return;
+    first = ((char *)addr - region->exec) >> JIT_POOL_GRANULE_SHIFT;
+    for (i = first; i < first + count && i < region->granules; i++) region->state[i] = JIT_GRANULE_DIRTY;
+    jit_pool_stats.frees++;
+    jit_pool_stats.code_bytes -= count << JIT_POOL_GRANULE_SHIFT;
+}
+
+
+/***********************************************************************
+ *           count_exec_host_pages
+ *
+ * Count the host pages of a view that the host maps executable.
+ * virtual_mutex must be held by caller.
+ */
+static size_t count_exec_host_pages( const struct file_view *view )
+{
+    const char *page = ROUND_ADDR( view->base, host_page_mask );
+    const char *end = (const char *)view->base + view->size;
+    size_t count = 0;
+
+    for ( ; page < end; page += host_page_size)
+        if (get_unix_prot( get_host_page_vprot( page )) & PROT_EXEC) count++;
+    return count;
+}
+
+
+/***********************************************************************
  *           unmap_area
  *
  * Unmap an area, or simply replace it by an empty mapping if it is
@@ -1471,7 +1708,11 @@ static void unregister_view( struct file_view *view )
  */
 static void delete_view( struct file_view *view ) /* [in] View */
 {
-    if (!(view->protect & VPROT_SYSTEM)) unmap_area( view->base, view->size );
+    if (jit_pool_count && (view->protect & VPROT_NATIVE_IMAGE))
+        jit_pool_stats.image_exec_pages -= min( jit_pool_stats.image_exec_pages, count_exec_host_pages( view ));
+    /* pool memory is never unmapped: its range goes back to the pool */
+    if (jit_pool_count && (view->protect & VPROT_JIT)) jit_pool_free( view->base, view->size );
+    else if (!(view->protect & VPROT_SYSTEM)) unmap_area( view->base, view->size );
     set_page_vprot( view->base, view->size, 0 );
     if (view->protect & VPROT_ARM64EC) clear_arm64ec_range( view->base, view->size );
     unregister_view( view );
@@ -1607,6 +1848,26 @@ static NTSTATUS get_vprot_flags( DWORD protect, unsigned int *vprot, BOOL image 
  */
 static inline int mprotect_exec( void *base, size_t size, int unix_prot )
 {
+    if (jit_pool_count)
+    {
+        /* with the host's JIT code pool, the only memory outside it that the host may execute
+         * is the images of the native machine, until their code is placed in the pool too.
+         * Everything else that Windows code marks executable is code of the guest, which the
+         * translator reads and never runs. */
+        if (unix_prot & PROT_EXEC)
+        {
+            struct file_view *view = find_view( base, 0 );
+
+            if (view && (view->protect & VPROT_SYSTEM))
+                jit_pool_stats.exec_pages_outside += size / host_page_size;
+            else if (!view || !(view->protect & VPROT_NATIVE_IMAGE))
+            {
+                jit_pool_stats.exec_pages_denied += size / host_page_size;
+                unix_prot &= ~PROT_EXEC;
+            }
+        }
+        return mprotect( base, size, unix_prot );
+    }
     if (force_exec_prot && (unix_prot & PROT_READ) && !(unix_prot & PROT_EXEC))
     {
         TRACE( "forcing exec permission on %p-%p\n", base, (char *)base + size - 1 );
@@ -1630,6 +1891,9 @@ static int mprotect_range( void *base, size_t size, BYTE set, BYTE clear )
     char *addr = ROUND_ADDR( base, host_page_mask );
     int prot, next;
     BYTE vprot;
+
+    /* the protections of pool memory are fixed: a view of it keeps them as bookkeeping only */
+    if (is_jit_pool_address( base )) return 0;
 
     size = ROUND_SIZE( base, size, host_page_mask );
 
@@ -1975,6 +2239,40 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
 }
 
 
+/***********************************************************************
+ *           map_jit_pool_view
+ *
+ * Create a view for generated ARM64EC code in the host's JIT code pool.
+ * virtual_mutex must be held by caller.
+ *
+ * The view lies at the execute address of its range, where the memory is
+ * readable and executable and stays so; the code is written through the
+ * alias that __wine_jit_get_write_address returns. A request that the pool
+ * cannot serve fails: no other memory can run code.
+ */
+static NTSTATUS map_jit_pool_view( struct file_view **view_ret, size_t size, unsigned int vprot,
+                                   size_t align_mask )
+{
+    NTSTATUS status;
+    void *ptr;
+
+    if (!(ptr = jit_pool_alloc( size, align_mask )))
+    {
+        ERR( "the JIT code pool has no room for %p bytes (%s of %s bytes in use)\n", (void *)size,
+             wine_dbgstr_longlong( jit_pool_stats.code_bytes ), wine_dbgstr_longlong( jit_pool_stats.code_limit ));
+        return STATUS_NO_MEMORY;
+    }
+    if ((status = create_view( view_ret, ptr, size, vprot )))
+    {
+        jit_pool_free( ptr, size );
+        return status;
+    }
+    (*view_ret)->protect |= VPROT_JIT;
+    TRACE( "got JIT code pool mem %p-%p\n", ptr, (char *)ptr + size );
+    return STATUS_SUCCESS;
+}
+
+
 #if defined(__APPLE__) && defined(__aarch64__)
 
 /***********************************************************************
@@ -2165,6 +2463,16 @@ static NTSTATUS decommit_pages( struct file_view *view, char *base, size_t size 
     }
     else host_end = ROUND_ADDR( base + size, host_page_mask );
 
+    if (jit_pool_count && (view->protect & VPROT_JIT))
+    {
+        /* pool memory cannot be replaced by a fresh mapping: clear it through the alias, so
+         * that it reads as zeroes when it is committed again */
+        void *alias = host_start < host_end ? jit_pool_write_address( host_start, host_end - host_start ) : NULL;
+
+        if (alias) memset( alias, 0, host_end - host_start );
+        set_page_vprot_bits( base, size, 0, VPROT_COMMITTED );
+        return STATUS_SUCCESS;
+    }
     if (host_start < host_end) anon_mmap_fixed( host_start, host_end - host_start, PROT_NONE, 0 );
     set_page_vprot_bits( base, size, 0, VPROT_COMMITTED );
     if (host_start < host_end) kernel_writewatch_register_range( view, host_start, host_end - host_start );
@@ -2275,6 +2583,9 @@ static NTSTATUS free_pages( struct file_view *view, char *base, size_t size )
         delete_view( view );
         return STATUS_SUCCESS;
     }
+
+    /* a view of pool memory is freed as a whole */
+    if (jit_pool_count && (view->protect & VPROT_JIT)) return STATUS_UNABLE_TO_FREE_VM;
 
     /* new view needs to start on page boundary */
 
@@ -2886,6 +3197,10 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
     }
 
 #ifdef __aarch64__
+    /* the host runs the code of such an image itself, so it stays executable beside the pool */
+    if (image_info->machine == IMAGE_FILE_MACHINE_ARM64 || image_info->is_hybrid)
+        view->protect |= VPROT_NATIVE_IMAGE;
+
     if ((dir = get_data_dir( nt, total_size, IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG )))
     {
         if (image_info->machine == IMAGE_FILE_MACHINE_ARM64 &&
@@ -2977,6 +3292,12 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
         if (mprotect_range( ptr + sec[i].VirtualAddress, size, 0, 0 ) && (sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE))
             ERR( "failed to set %08x protection on %s section %.8s, noexec filesystem?\n",
                  sec[i].Characteristics, debugstr_us(nt_name), sec[i].Name );
+    }
+    if (jit_pool_count && (view->protect & VPROT_NATIVE_IMAGE))
+    {
+        jit_pool_stats.image_exec_pages += count_exec_host_pages( view );
+        if (jit_pool_stats.image_exec_pages > jit_pool_stats.image_exec_peak_pages)
+            jit_pool_stats.image_exec_peak_pages = jit_pool_stats.image_exec_pages;
     }
 
 #ifdef VALGRIND_LOAD_PDB_DEBUGINFO
@@ -4262,11 +4583,46 @@ NTSTATUS unixcall_jit_write_protect( void *args )
 #if defined(__APPLE__) && defined(__aarch64__)
     const struct jit_write_protect_params *params = args;
 
+    /* pool memory has no switch: it is written through its alias */
+    if (jit_pool_count) return STATUS_NOT_SUPPORTED;
     pthread_jit_write_protect_np( params->enable );
     return STATUS_SUCCESS;
 #else
     return STATUS_NOT_SUPPORTED;
 #endif
+}
+
+/***********************************************************************
+ *           unixcall_jit_get_write_address
+ *
+ * Return the address at which a range of the JIT code pool is writable.
+ * The range is given by its execute address, as NtAllocateVirtualMemoryEx
+ * returned it, and must lie inside one region of the pool.
+ */
+NTSTATUS unixcall_jit_get_write_address( void *args )
+{
+    const struct jit_get_write_address_params *params = args;
+    void *ptr;
+
+    if (!jit_pool_count) return STATUS_NOT_SUPPORTED;
+    if (!(ptr = jit_pool_write_address( params->addr, params->size ))) return STATUS_INVALID_PARAMETER;
+    *params->write = ptr;
+    return STATUS_SUCCESS;
+}
+
+/***********************************************************************
+ *           unixcall_jit_get_code_limit
+ *
+ * Return how many bytes of the JIT code pool generated code can hold at
+ * once: the pool without the part that is kept for images.
+ */
+NTSTATUS unixcall_jit_get_code_limit( void *args )
+{
+    const struct jit_get_code_limit_params *params = args;
+
+    if (!jit_pool_count) return STATUS_NOT_SUPPORTED;
+    *params->limit = jit_pool_stats.code_limit;
+    return STATUS_SUCCESS;
 }
 
 /***********************************************************************
@@ -4429,6 +4785,10 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec, 
     void *addr = (void *)rec->ExceptionInformation[1];
     char *page = ROUND_ADDR( addr, host_page_mask );
     BYTE vprot;
+
+    /* the protections of pool memory never change, so a fault on it cannot be resolved here:
+     * it is a write to an execute address */
+    if (is_jit_pool_address( addr )) return STATUS_ACCESS_VIOLATION;
 
     mutex_lock( &virtual_mutex );  /* no need for signal masking inside signal handler */
     vprot = get_host_page_vprot( page );
@@ -4941,6 +5301,15 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
 
             if (vprot & VPROT_WRITECOPY) status = STATUS_INVALID_PAGE_PROTECTION;
             else if (is_dos_memory) status = allocate_dos_memory( &view, vprot );
+            /* with the host's JIT code pool, ARM64EC code comes from the pool or not at all: the
+             * pool's addresses are given, so it can only serve a request that leaves the address
+             * to us */
+            else if (jit_pool_count && (attributes & MEM_EXTENDED_PARAMETER_EC_CODE))
+            {
+                if (!base && !limit_low && !limit_high && !(type & (MEM_WRITE_WATCH | MEM_RESERVE_PLACEHOLDER)))
+                    status = map_jit_pool_view( &view, size, vprot, align ? align - 1 : granularity_mask );
+                else status = STATUS_NO_MEMORY;
+            }
 #if defined(__APPLE__) && defined(__aarch64__)
             /* the kernel places a MAP_JIT mapping itself, so it can only serve
              * a request that leaves the address to us */
@@ -4961,7 +5330,7 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
     else if (type & MEM_RESET)
     {
         if (!(view = find_view( base, size ))) status = STATUS_NOT_MAPPED_VIEW;
-        else madvise( base, size, MADV_DONTNEED );
+        else if (!is_jit_pool_address( base )) madvise( base, size, MADV_DONTNEED );
     }
     else  /* commit the pages */
     {

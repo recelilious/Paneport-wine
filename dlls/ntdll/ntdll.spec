@@ -3,6 +3,7 @@
 #if you change a Nt.. function DON'T FORGET to change the
 #Zw one too.
 #Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and adds __wine_jit_write_protect.
+#Changed for Paneport on 2026-11-28: adds __wine_jit_get_write_address and __wine_jit_get_code_limit.
 
 @ stdcall A_SHAFinal(ptr ptr)
 @ stdcall A_SHAInit(ptr)
@@ -1792,3 +1793,5 @@
 @ cdecl wine_get_host_version(ptr ptr)
 @ cdecl -norelay __wine_get_user_shared_data()
 @ cdecl -norelay -arch=arm64,arm64ec __wine_jit_write_protect(long)
+@ cdecl -norelay -arch=arm64,arm64ec __wine_jit_get_write_address(ptr long ptr)
+@ cdecl -norelay -arch=arm64,arm64ec __wine_jit_get_code_limit(ptr)

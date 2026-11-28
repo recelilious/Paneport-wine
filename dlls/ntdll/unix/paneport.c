@@ -59,6 +59,7 @@
 #include <unistd.h>
 #ifdef __APPLE__
 # include <mach/mach.h>
+# include <TargetConditionals.h>
 #endif
 
 #include "ntstatus.h"
@@ -212,6 +213,74 @@ static void server_log( int level, const char *text )
 
 
 /***********************************************************************
+ *           read_jit_pool
+ *
+ * Reads the regions of the host's JIT code pool through the bridge, once, and hands them to
+ * the memory manager, which serves ARM64EC code from them from then on. A host without a pool
+ * lists no region, and ARM64EC code is then mapped as it is without Paneport; an iOS device
+ * has no such way, so a session without a pool does not start there.
+ */
+static BOOL read_jit_pool(void)
+{
+    pp_wine_jit_region_t regions[16];
+    struct wine_jit_pool_region pool[ARRAY_SIZE(regions)];
+    uint32_t i, count = 0;
+
+    if (bridge->get_jit_pool( regions, ARRAY_SIZE(regions), &count ) || count > ARRAY_SIZE(regions))
+    {
+        paneport_log( PP_WINE_LOG_ERROR, "the host's JIT code pool could not be read (%u regions)", count );
+        return FALSE;
+    }
+    if (!count)
+    {
+#if defined(__APPLE__) && TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+        paneport_log( PP_WINE_LOG_ERROR, "the host has no JIT code pool, and nothing else can run code here" );
+        return FALSE;
+#else
+        return TRUE;
+#endif
+    }
+    for (i = 0; i < count; i++)
+    {
+        pool[i].exec  = (void *)(UINT_PTR)regions[i].exec_address;
+        pool[i].write = (void *)(UINT_PTR)regions[i].write_address;
+        pool[i].size  = regions[i].size;
+    }
+    if (!virtual_set_jit_pool( pool, count ))
+    {
+        paneport_log( PP_WINE_LOG_ERROR, "the host's JIT code pool of %u regions cannot be used", count );
+        return FALSE;
+    }
+    return TRUE;
+}
+
+
+/***********************************************************************
+ *           log_jit_pool
+ *
+ * Hands the counters of the JIT code pool to the host's log in one line, when the process
+ * ends. Paneport's harness reads the line.
+ */
+static void log_jit_pool(void)
+{
+    struct wine_jit_pool_stats stats;
+
+    virtual_get_jit_pool_stats( &stats );
+    if (!stats.regions) return;
+    paneport_log( PP_WINE_LOG_INFO, "jit pool: regions %llu pool_bytes %llu code_limit %llu "
+                  "pool_fex_bytes %llu pool_fex_peak_bytes %llu pool_pe_bytes 0 allocations %llu "
+                  "frees %llu refusals %llu exec_pages_outside_pool %llu exec_pages_denied %llu "
+                  "image_exec_pages_outside_pool %llu",
+                  (unsigned long long)stats.regions, (unsigned long long)stats.pool_bytes,
+                  (unsigned long long)stats.code_limit, (unsigned long long)stats.code_bytes,
+                  (unsigned long long)stats.code_peak_bytes, (unsigned long long)stats.allocations,
+                  (unsigned long long)stats.frees, (unsigned long long)stats.refusals,
+                  (unsigned long long)stats.exec_pages_outside, (unsigned long long)stats.exec_pages_denied,
+                  (unsigned long long)stats.image_exec_peak_pages );
+}
+
+
+/***********************************************************************
  *           server_process_ended
  *
  * The server's report that a process ended, on the server's thread.
@@ -219,6 +288,7 @@ static void server_log( int level, const char *text )
 static void server_process_ended( unsigned int id, unsigned int exit_code )
 {
     if (!process_launched || (process_id && id != process_id)) return;
+    log_jit_pool();
     process_exit_code = exit_code;
     InterlockedExchange( &process_state, WINE_PANEPORT_PROCESS_EXITED );
     bridge->process_exited( process_handle, exit_code );
@@ -1458,6 +1528,8 @@ DECLSPEC_EXPORT int32_t __wine_paneport_session_start( const pp_wine_bridge_t *h
         return PP_WINE_E_SYSTEM;
     }
 #endif
+
+    if (!read_jit_pool()) return PP_WINE_E_SYSTEM;
 
     if (!apply_environment( session->environment ) || setenv( "WINEPREFIX", session->prefix_folder, 1 ))
     {

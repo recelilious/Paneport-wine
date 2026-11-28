@@ -5,6 +5,7 @@
  * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and adds __wine_jit_write_protect.
  * Changed for Paneport on 2026-11-23: declares single-process mode, and gives a thread's data a record for its thread control.
  * Changed for Paneport on 2026-11-27: declares signal_check_tsd.
+ * Changed for Paneport on 2026-11-28: declares the JIT code pool's hand-over and counters, and the Unix calls of __wine_jit_get_write_address and __wine_jit_get_code_limit.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -336,6 +337,38 @@ extern void paneport_start_process( int argc, char *argv[] );
 extern char *paneport_server_library_path(void);
 extern char *paneport_nls_dir(void);
 extern void paneport_close_process_fds(void);
+
+/* virtual.c: the JIT code pool of Paneport's host */
+
+/* one region of the pool, as the host's bridge lists it */
+struct wine_jit_pool_region
+{
+    void   *exec;   /* the executable view: readable and executable, never writable */
+    void   *write;  /* the writable alias: readable and writable, never executable */
+    SIZE_T  size;   /* in bytes */
+};
+
+/* the pool's counters */
+struct wine_jit_pool_stats
+{
+    ULONG64 regions;                /* number of regions */
+    ULONG64 pool_bytes;             /* the pool's usable size */
+    ULONG64 code_limit;             /* the part that generated code may hold at once */
+    ULONG64 code_bytes;             /* generated code's views now */
+    ULONG64 code_peak_bytes;        /* and at their largest */
+    ULONG64 allocations;            /* ranges handed out */
+    ULONG64 frees;                  /* ranges given back */
+    ULONG64 refusals;               /* requests that the pool could not serve */
+    ULONG64 exec_pages_outside;     /* host pages made executable outside the pool, images of
+                                     * the native machine not counted */
+    ULONG64 exec_pages_denied;      /* host pages for which Windows code asked for execute
+                                     * permission and the host gave none, counted per request */
+    ULONG64 image_exec_pages;       /* executable host pages of native images now */
+    ULONG64 image_exec_peak_pages;  /* and at their largest */
+};
+
+extern BOOL virtual_set_jit_pool( const struct wine_jit_pool_region *regions, unsigned int count );
+extern void virtual_get_jit_pool_stats( struct wine_jit_pool_stats *stats );
 extern void wait_suspend( CONTEXT *context );
 extern NTSTATUS send_debug_event( struct thread_data *data, EXCEPTION_RECORD *rec,
                                   CONTEXT *context, BOOL first_chance );
@@ -455,6 +488,8 @@ extern NTSTATUS unixcall_get_shared_user_data( void *args );
 extern NTSTATUS unixcall_register_teb_ptr( void *args );
 extern NTSTATUS unixcall_get_current_teb( void *args );
 extern NTSTATUS unixcall_jit_write_protect( void *args );
+extern NTSTATUS unixcall_jit_get_write_address( void *args );
+extern NTSTATUS unixcall_jit_get_code_limit( void *args );
 extern struct _TEB * volatile *current_teb_ptr;
 #ifdef _WIN64
 extern NTSTATUS wow64_wine_dbg_write( void *args );

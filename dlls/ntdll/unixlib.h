@@ -3,6 +3,7 @@
  *
  * Copyright (C) 2020 Alexandre Julliard
  * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and adds __wine_jit_write_protect.
+ * Changed for Paneport on 2026-11-28: adds the Unix calls of __wine_jit_get_write_address and __wine_jit_get_code_limit.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -87,6 +88,18 @@ struct jit_write_protect_params
     BOOL enable;
 };
 
+struct jit_get_write_address_params
+{
+    const void *addr;
+    SIZE_T      size;
+    void      **write;
+};
+
+struct jit_get_code_limit_params
+{
+    SIZE_T *limit;
+};
+
 enum ntdll_unix_funcs
 {
     unix_load_so_dll,
@@ -101,6 +114,8 @@ enum ntdll_unix_funcs
     unix_register_teb_ptr,
     unix_get_current_teb,
     unix_jit_write_protect,
+    unix_jit_get_write_address,
+    unix_jit_get_code_limit,
 };
 
 extern unixlib_handle_t __wine_unixlib_handle;

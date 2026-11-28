@@ -3,6 +3,7 @@
  *
  * Copyright 1996, 2003 Alexandre Julliard
  * Changed for Paneport on 2026-11-15: carries Wine merge request 11638 by trcrsired, rebased onto Wine 11.20, and adds __wine_jit_write_protect.
+ * Changed for Paneport on 2026-11-28: adds __wine_jit_get_write_address and __wine_jit_get_code_limit.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -70,6 +71,37 @@ NTSTATUS __cdecl __wine_jit_write_protect( BOOL enable )
     struct jit_write_protect_params params = { enable };
 
     return WINE_UNIX_CALL( unix_jit_write_protect, &params );
+}
+
+/***********************************************************************
+ *           __wine_jit_get_write_address  (NTDLL.@)
+ *
+ * Return the address at which a range of the memory that
+ * NtAllocateVirtualMemoryEx gave out for ARM64EC code is writable, on hosts
+ * that map such memory twice: executable at the address of the allocation,
+ * and writable at another. Code is written through the returned address and
+ * runs from the allocation's. Elsewhere it returns STATUS_NOT_SUPPORTED,
+ * and the memory is written where it lies.
+ */
+NTSTATUS __cdecl __wine_jit_get_write_address( const void *addr, SIZE_T size, void **write )
+{
+    struct jit_get_write_address_params params = { addr, size, write };
+
+    return WINE_UNIX_CALL( unix_jit_get_write_address, &params );
+}
+
+/***********************************************************************
+ *           __wine_jit_get_code_limit  (NTDLL.@)
+ *
+ * Return how many bytes of ARM64EC code NtAllocateVirtualMemoryEx can give
+ * out at once, on hosts that serve such memory from a pool of a fixed size.
+ * Elsewhere it returns STATUS_NOT_SUPPORTED.
+ */
+NTSTATUS __cdecl __wine_jit_get_code_limit( SIZE_T *limit )
+{
+    struct jit_get_code_limit_params params = { limit };
+
+    return WINE_UNIX_CALL( unix_jit_get_code_limit, &params );
 }
 #endif
 
